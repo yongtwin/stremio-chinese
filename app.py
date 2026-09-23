@@ -11,8 +11,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 
-APP_NAME = "Chinese & HK Catalog v1.3.2"
-APP_VERSION = "1.3.2"
+APP_NAME = "Chinese & HK Catalog v1.4.0"
+APP_VERSION = "1.4.0"
 
 TMDB_API_TOKEN = os.getenv("TMDB_API_TOKEN", "").strip()
 TMDB_API_KEY = os.getenv("TMDB_API_KEY", "").strip()
@@ -51,7 +51,7 @@ CATALOGS = {
 }
 
 MANIFEST = {
-    "id": "com.twin.chinese-hk-catalog.v132",
+    "id": "com.twin.chinese-hk-catalog.v140",
     "version": APP_VERSION,
     "name": APP_NAME,
     "description": (
@@ -61,7 +61,7 @@ MANIFEST = {
     ),
     "resources": [
         "catalog",
-        {"name": "meta", "types": ["movie", "series"], "idPrefixes": ["tt"]},
+        {"name": "meta", "types": ["movie", "series"], "idPrefixes": ["tch:"]},
     ],
     "types": ["movie", "series"],
     "catalogs": [
@@ -81,7 +81,7 @@ MANIFEST = {
         }
         for (media_type, catalog_id), cfg in CATALOGS.items()
     ],
-    "idPrefixes": ["tt"],
+    "idPrefixes": ["tch:"],
     "behaviorHints": {"adult": False, "p2p": False},
 }
 
@@ -239,6 +239,39 @@ async def imdb_id_for_tmdb(tmdb_type: str, tmdb_id: int) -> str | None:
     return imdb_id
 
 
+def make_custom_id(media_type: str, tmdb_id: int, imdb_id: str) -> str:
+    """
+    Use an addon-specific meta ID so Stremio does not let Cinemeta win the detail-page
+    metadata selection for the same IMDb `tt...` ID.
+
+    The canonical IMDb ID is still embedded and later used as the stream/video ID.
+    """
+    return f"tch:{media_type}:{tmdb_id}:{imdb_id}"
+
+
+def parse_custom_id(media_type: str, item_id: str) -> tuple[int, str] | None:
+    parts = item_id.split(":")
+    if len(parts) != 4:
+        return None
+
+    prefix, encoded_type, tmdb_raw, imdb_id = parts
+    if prefix != "tch" or encoded_type != media_type:
+        return None
+
+    if not imdb_id.startswith("tt"):
+        return None
+
+    try:
+        tmdb_id = int(tmdb_raw)
+    except ValueError:
+        return None
+
+    if tmdb_id <= 0:
+        return None
+
+    return tmdb_id, imdb_id
+
+
 async def discover_catalog(
     media_type: str,
     catalog_id: str,
@@ -295,13 +328,20 @@ async def discover_catalog(
         if not poster:
             continue
 
+        custom_id = make_custom_id(media_type, int(item["id"]), imdb_result)
+
         meta: dict[str, Any] = {
-            "id": imdb_result,
+            "id": custom_id,
             "type": media_type,
             "name": name,
             "poster": poster,
             "posterShape": "poster",
         }
+
+        # For movies the detail meta will use this canonical IMDb ID as the actual
+        # stream request ID. Series use IMDb episode IDs in `videos`.
+        if media_type == "movie":
+            meta["behaviorHints"] = {"defaultVideoId": imdb_result}
 
         if item.get("overview"):
             meta["description"] = item["overview"]
@@ -825,30 +865,38 @@ def tmdb_fallback_meta(
     return meta
 
 
-async def metadata_proxy(media_type: str, imdb_id: str) -> dict[str, Any]:
-    if media_type not in {"movie", "series"} or not imdb_id.startswith("tt"):
+async def metadata_proxy(media_type: str, item_id: str) -> dict[str, Any]:
+    """
+    v1.4 uses our own `tch:` meta IDs.
+
+    Why:
+      - Stremio requests meta from every relevant addon.
+      - With an IMDb `tt...` meta ID, Cinemeta usually appears before this addon and
+        its English detail page becomes the selected meta item.
+      - A custom `tch:` ID makes this addon the only relevant meta provider.
+
+    Playback stays compatible:
+      - movie -> behaviorHints.defaultVideoId = IMDb tt... ID
+      - series -> Cinemeta episode IDs remain tt...:season:episode
+    """
+    if media_type not in {"movie", "series"}:
         return {"meta": None}
 
-    cache_key = f"meta-proxy:{media_type}:{imdb_id}:v13"
+    parsed = parse_custom_id(media_type, item_id)
+    if not parsed:
+        return {"meta": None}
+
+    tmdb_id, imdb_id = parsed
+    cache_key = f"meta-custom:{media_type}:{item_id}:v14"
     cached = cache.get(cache_key)
     if cached is not None:
         return cached
 
+    tmdb_type = "movie" if media_type == "movie" else "tv"
+
+    # Cinemeta is now only an internal data source. Stremio itself never asks
+    # Cinemeta for our custom `tch:` meta ID.
     cine_task = asyncio.create_task(cinemeta_meta(media_type, imdb_id))
-
-    try:
-        mapping = await find_tmdb_from_imdb(media_type, imdb_id)
-    except Exception:
-        mapping = None
-
-    cine = await cine_task
-
-    if not mapping:
-        payload = {"meta": cine} if cine else {"meta": None}
-        cache.set(cache_key, payload, 12 * 60 * 60)
-        return payload
-
-    tmdb_type, tmdb_id = mapping
 
     try:
         chinese, chosen_country, credits, locales = await get_chinese_bundle(
@@ -858,21 +906,35 @@ async def metadata_proxy(media_type: str, imdb_id: str) -> dict[str, Any]:
     except Exception:
         chinese, chosen_country, credits, locales = None, None, None, []
 
-    # Non-CN/HK: preserve Cinemeta English.
-    if not chinese:
-        if cine:
-            payload = {"meta": cine}
-        else:
-            try:
-                english = await get_details(tmdb_type, tmdb_id, "en-US", False)
-                payload = {"meta": tmdb_fallback_meta(media_type, imdb_id, english)}
-            except Exception:
-                payload = {"meta": None}
+    cine = await cine_task
 
+    # Catalogs only emit CN/HK entries, but keep a defensive fallback.
+    if not chinese:
+        try:
+            english = await get_details(tmdb_type, tmdb_id, "en-US", False)
+            meta = dict(cine or tmdb_fallback_meta(media_type, imdb_id, english))
+        except Exception:
+            meta = dict(cine or {})
+
+        if not meta:
+            payload = {"meta": None}
+            cache.set(cache_key, payload, 30 * 60)
+            return payload
+
+        meta["id"] = item_id
+        meta["type"] = media_type
+
+        if media_type == "movie":
+            hints = dict(meta.get("behaviorHints") or {})
+            hints["defaultVideoId"] = imdb_id
+            meta["behaviorHints"] = hints
+
+        payload = {"meta": meta}
         cache.set(cache_key, payload, 12 * 60 * 60)
         return payload
 
-    # CN/HK: start from Cinemeta to keep canonical IMDb and episode IDs.
+    # Start from Cinemeta internally so we retain useful IMDb metadata and,
+    # for series, its canonical tt...:season:episode video IDs.
     meta = dict(cine or tmdb_fallback_meta(media_type, imdb_id, chinese))
     title_key = "title" if tmdb_type == "movie" else "name"
 
@@ -911,7 +973,6 @@ async def metadata_proxy(media_type: str, imdb_id: str) -> dict[str, Any]:
                 meta["cast"] = localized_cast
 
             if localized_directors:
-                # Keep both common legacy keys; modern Stremio primarily uses `links`.
                 meta["director"] = localized_directors
                 meta["directors"] = localized_directors
 
@@ -925,18 +986,30 @@ async def metadata_proxy(media_type: str, imdb_id: str) -> dict[str, Any]:
         except Exception:
             pass
 
-    if media_type == "series" and tmdb_type == "tv" and locales:
+    if media_type == "series" and locales:
         try:
+            # Existing Cinemeta videos retain their canonical tt... episode IDs.
             await localize_series_episodes(meta, tmdb_id, locales)
         except Exception:
-            # Never break the entire detail page because one season localization failed.
             pass
 
     if chosen_country:
         meta["country"] = chosen_country
 
-    meta["id"] = imdb_id
+    # IMPORTANT: the meta ID stays custom so Cinemeta cannot take over the detail page.
+    meta["id"] = item_id
     meta["type"] = media_type
+
+    if media_type == "movie":
+        # Stremio Core uses defaultVideoId when choosing the stream request ID.
+        # This sends AIOStreams/TorBox the normal IMDb `tt...` ID.
+        hints = dict(meta.get("behaviorHints") or {})
+        hints["defaultVideoId"] = imdb_id
+        meta["behaviorHints"] = hints
+
+        # Movies are single-video items. Do not let an inherited Cinemeta id become
+        # the visible meta identity; stream identity is carried by defaultVideoId.
+        meta.pop("videos", None)
 
     payload = {"meta": meta}
     cache.set(cache_key, payload, 12 * 60 * 60)
@@ -947,8 +1020,8 @@ async def metadata_proxy(media_type: str, imdb_id: str) -> dict[str, Any]:
 async def home(request: Request):
     host = request.headers.get("host", "your-project.vercel.app")
     scheme = request.headers.get("x-forwarded-proto", request.url.scheme or "https")
-    manifest_url = f"{scheme}://{host}/v132/manifest.json"
-    stremio_url = f"stremio://{host}/v132/manifest.json"
+    manifest_url = f"{scheme}://{host}/v140/manifest.json"
+    stremio_url = f"stremio://{host}/v140/manifest.json"
     configured = bool(TMDB_API_TOKEN or TMDB_API_KEY)
 
     status = "✅ TMDB configured" if configured else "⚠️ TMDB token not configured"
@@ -970,7 +1043,7 @@ async def home(request: Request):
   <h1>{APP_NAME}</h1>
   <p>🇨🇳 中国电影 · 🇭🇰 香港电影 · 🇨🇳 中国电视剧 · 🇭🇰 香港电视剧</p>
   <p>Popular · Latest · Top Rated</p>
-  <p>CN/HK: 中文标题、简介、演员/导演/编剧（有原生中文名时）以及剧集单集资料。</p>
+  <p>CN/HK: 中文详情由本 addon 独立提供；播放仍使用 IMDb ID 交给 AIOStreams/TorBox。</p>
   <p>其他国家：保留 Cinemeta English metadata。</p>
   <p>{status}</p>
   <p><a class="button" href="{stremio_url}">Install in Stremio</a></p>
@@ -993,8 +1066,8 @@ async def manifest():
     )
 
 
-@app.get("/v132/manifest.json")
-async def manifest_v132():
+@app.get("/v140/manifest.json")
+async def manifest_v140():
     return JSONResponse(
         MANIFEST,
         headers={
@@ -1045,10 +1118,10 @@ async def catalog_with_extra(
         ) from exc
 
 
-@app.get("/meta/{media_type}/{imdb_id}.json")
-async def meta(media_type: str, imdb_id: str):
+@app.get("/meta/{media_type}/{item_id}.json")
+async def meta(media_type: str, item_id: str):
     try:
-        payload = await metadata_proxy(media_type, imdb_id)
+        payload = await metadata_proxy(media_type, item_id)
         return JSONResponse(
             payload,
             headers={"Cache-Control": "public, max-age=1800"},
@@ -1061,13 +1134,13 @@ async def meta(media_type: str, imdb_id: str):
 
 
 
-@app.get("/v132/catalog/{media_type}/{catalog_id}.json")
-async def catalog_v132(media_type: str, catalog_id: str):
+@app.get("/v140/catalog/{media_type}/{catalog_id}.json")
+async def catalog_v140(media_type: str, catalog_id: str):
     return await catalog(media_type, catalog_id)
 
 
-@app.get("/v132/catalog/{media_type}/{catalog_id}/{extra_args}.json")
-async def catalog_with_extra_v132(
+@app.get("/v140/catalog/{media_type}/{catalog_id}/{extra_args}.json")
+async def catalog_with_extra_v140(
     media_type: str,
     catalog_id: str,
     extra_args: str,
@@ -1075,9 +1148,9 @@ async def catalog_with_extra_v132(
     return await catalog_with_extra(media_type, catalog_id, extra_args)
 
 
-@app.get("/v132/meta/{media_type}/{imdb_id}.json")
-async def meta_v132(media_type: str, imdb_id: str):
-    return await meta(media_type, imdb_id)
+@app.get("/v140/meta/{media_type}/{item_id}.json")
+async def meta_v140(media_type: str, item_id: str):
+    return await meta(media_type, item_id)
 
 
 @app.get("/health")
@@ -1091,7 +1164,7 @@ async def health():
             "native-name credit aliases",
             "localized TV episodes",
             "Popular/Latest/Top Rated",
-            "Cinemeta English fallback",
+            "custom meta IDs with IMDb stream IDs",
         ],
         "sortOptions": SORT_OPTIONS,
         "catalogs": [cfg["name"] for cfg in CATALOGS.values()],
