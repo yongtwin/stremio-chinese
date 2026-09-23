@@ -1,112 +1,143 @@
-# Chinese & HK Catalog for Stremio
+# Chinese & HK Catalog for Stremio — v1.3
 
-A tiny FastAPI Stremio addon for:
+A small FastAPI Stremio catalog + metadata addon designed for a mixed-language Stremio setup.
+
+## Behaviour
+
+### China / Hong Kong titles
+
+- Chinese title
+- Chinese description
+- Chinese genres
+- Cast / director / writer names use native Chinese names when TMDB has them
+- TV episode title + episode description are localized when TMDB has Chinese episode metadata
+- IMDb/Cinemeta IDs are preserved so AIOStreams/TorBox can still resolve streams
+
+### Everything else
+
+The addon falls back to Cinemeta's normal English metadata.
+
+## Catalogs
 
 - 🇨🇳 中国电影
 - 🇭🇰 香港电影
 - 🇨🇳 中国电视剧
 - 🇭🇰 香港电视剧
 
-It uses TMDB for China/Hong Kong discovery and localized Chinese titles/descriptions.
+Sorting options:
 
-It **does not provide streams**. Keep using AIOStreams / TorBox / your normal stream addons.
+- Popular
+- Latest
+- Top Rated
 
-## What it does
+The selector uses Stremio's `genre` extra slot because Stremio does not expose a portable generic sort dropdown for addon catalogs.
 
-- China catalogs use `zh-CN`
-- Hong Kong catalogs prefer `zh-HK`, with Chinese fallbacks
-- Catalog items are converted to IMDb `tt...` IDs, so normal Stremio stream addons can still resolve them
-- Metadata acts as a proxy:
-  - CN/HK titles → Chinese title + Chinese description
-  - everything else → Cinemeta's normal English metadata
-- For series, Cinemeta's episode/video IDs are preserved so existing stream addons remain compatible
+## v1.3 changes
 
-## 1. Get a TMDB token
+### Better Chinese actor/director/writer names
 
-Create/log in to a TMDB account and obtain an API **Read Access Token**.
+TMDB does not reliably localize person names using the normal `language` parameter.
 
-Recommended environment variable:
+v1.3 uses this order:
+
+1. Chinese `original_name`
+2. Chinese `name`
+3. Chinese alias from the person's `also_known_as`
+4. TMDB's normal name as fallback
+
+Person alias results are cached for 30 days.
+
+### Chinese TV episode metadata
+
+For CN/HK series, the addon keeps Cinemeta's episode IDs, for example:
+
+```text
+tt1234567:1:1
+```
+
+but overlays TMDB Chinese episode metadata when available:
+
+- title
+- overview
+- thumbnail
+- air date
+- runtime
+
+That means existing stream addons can continue using the same episode IDs.
+
+### Fewer TMDB requests
+
+The preferred localized movie/TV detail request now uses TMDB `append_to_response`
+to include credits (or aggregate TV credits) in the same request.
+
+Fallback Chinese locales are requested only when the preferred locale is missing
+the title or overview.
+
+### TMDB attribution
+
+The root page includes the required notice:
+
+> This product uses the TMDB API but is not endorsed or certified by TMDB.
+
+## Deploy/update on Vercel
+
+If you already deployed an older version:
+
+1. Replace the repo files with this version.
+2. Commit and push to GitHub.
+3. Vercel redeploys automatically.
+4. Your existing `TMDB_API_TOKEN` remains configured.
+5. Open:
+
+```text
+https://YOUR-PROJECT.vercel.app/health
+```
+
+You should see:
+
+```json
+"version": "1.3.0"
+```
+
+If Stremio keeps an old cached manifest, remove and reinstall the same manifest URL.
+
+## Environment variable
+
+Preferred:
 
 ```text
 TMDB_API_TOKEN=your_tmdb_read_access_token
 ```
 
-A classic v3 API key is also supported:
+Alternative:
 
 ```text
 TMDB_API_KEY=your_v3_api_key
 ```
 
-You only need one of them.
-
-## 2. Deploy to Vercel
-
-### Easiest: GitHub + Vercel
-
-1. Extract this ZIP.
-2. Create a GitHub repository and upload/push these files.
-3. In Vercel, choose **Add New → Project** and import that GitHub repository.
-4. In **Environment Variables**, add:
-   - Name: `TMDB_API_TOKEN`
-   - Value: your TMDB Read Access Token
-5. Deploy.
-
-Vercel supports FastAPI directly; no Docker or `vercel.json` is required.
-
-### Or: Vercel CLI
-
-After extracting:
-
-```bash
-npm i -g vercel
-vercel
-```
-
-Add `TMDB_API_TOKEN` in the Vercel project settings, then redeploy.
-
-## 3. Test it
-
-Open:
-
-```text
-https://YOUR-PROJECT.vercel.app/
-```
-
-The page should show:
-
-```text
-✅ TMDB configured
-```
-
-Then test:
-
-```text
-https://YOUR-PROJECT.vercel.app/manifest.json
-https://YOUR-PROJECT.vercel.app/catalog/movie/hk_movies.json
-https://YOUR-PROJECT.vercel.app/catalog/movie/cn_movies.json
-```
-
-## 4. Install in Stremio
-
-Use:
+## Install in Stremio
 
 ```text
 https://YOUR-PROJECT.vercel.app/manifest.json
 ```
 
-Or open the project root and click **Install in Stremio**.
+## Useful test endpoints
 
-## Important: metadata priority
+```text
+/health
+/manifest.json
 
-Stremio's built-in Cinemeta is also a metadata provider for IMDb IDs.
+/catalog/movie/cn_movies.json
+/catalog/movie/hk_movies.json
+/catalog/series/cn_series.json
+/catalog/series/hk_series.json
 
-This addon intentionally proxies Cinemeta:
-- China/HK → overlays Chinese title/description from TMDB
-- other countries → leaves Cinemeta metadata in English
+/catalog/movie/hk_movies/genre=Latest.json
+/catalog/movie/hk_movies/genre=Top%20Rated.json
 
-For the Chinese detail page to win consistently, this addon needs to be the metadata provider that Stremio prioritizes. If your Stremio setup always prioritizes Cinemeta, you may need to use your existing addon-management/reordering setup to put this metadata addon before Cinemeta, or disable only Cinemeta metadata while keeping a metadata provider available.
-
-You do **not** need to change AIOStreams/TorBox.
+/meta/movie/tt....json
+/meta/series/tt....json
+```
 
 ## Local run
 
@@ -121,7 +152,7 @@ source .venv/bin/activate
 
 pip install -r requirements.txt
 
-# Windows PowerShell
+# PowerShell
 $env:TMDB_API_TOKEN="your_token"
 
 # Linux/macOS
@@ -130,31 +161,11 @@ export TMDB_API_TOKEN="your_token"
 uvicorn app:app --reload --port 8000
 ```
 
-Open:
-
-```text
-http://127.0.0.1:8000/
-```
-
-## Endpoints
-
-```text
-/manifest.json
-
-/catalog/movie/cn_movies.json
-/catalog/movie/hk_movies.json
-/catalog/series/cn_series.json
-/catalog/series/hk_series.json
-
-/meta/movie/tt....json
-/meta/series/tt....json
-
-/health
-```
-
 ## Notes
 
-- Catalogs are sorted by TMDB popularity.
-- Entries without an IMDb ID are intentionally skipped for better compatibility with existing stream addons.
-- In-memory caching is used. On Vercel, a cold function may lose its cache; this is expected.
-- No TorBox key is stored or used by this project.
+- The addon intentionally skips catalog entries without an IMDb ID to preserve compatibility with existing stream addons.
+- Person names are not machine-translated. If TMDB has no native Chinese name/alias, the existing name is retained.
+- Episode localization depends on TMDB having Chinese metadata for that season/episode.
+- A defensive 20-season limit is used when enriching a single series detail request on serverless hosting.
+- In-memory cache can be lost on Vercel cold starts; this is expected.
+- No TorBox credential is stored or used by this addon.
