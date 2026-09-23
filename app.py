@@ -11,8 +11,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 
-APP_NAME = "Chinese & HK Catalog"
-APP_VERSION = "1.3.1"
+APP_NAME = "Chinese & HK Catalog v1.3.2"
+APP_VERSION = "1.3.2"
 
 TMDB_API_TOKEN = os.getenv("TMDB_API_TOKEN", "").strip()
 TMDB_API_KEY = os.getenv("TMDB_API_KEY", "").strip()
@@ -51,7 +51,7 @@ CATALOGS = {
 }
 
 MANIFEST = {
-    "id": "com.twin.chinese-hk-catalog.v13",
+    "id": "com.twin.chinese-hk-catalog.v132",
     "version": APP_VERSION,
     "name": APP_NAME,
     "description": (
@@ -947,8 +947,8 @@ async def metadata_proxy(media_type: str, imdb_id: str) -> dict[str, Any]:
 async def home(request: Request):
     host = request.headers.get("host", "your-project.vercel.app")
     scheme = request.headers.get("x-forwarded-proto", request.url.scheme or "https")
-    manifest_url = f"{scheme}://{host}/manifest.json"
-    stremio_url = f"stremio://{host}/manifest.json"
+    manifest_url = f"{scheme}://{host}/v132/manifest.json"
+    stremio_url = f"stremio://{host}/v132/manifest.json"
     configured = bool(TMDB_API_TOKEN or TMDB_API_KEY)
 
     status = "✅ TMDB configured" if configured else "⚠️ TMDB token not configured"
@@ -983,6 +983,18 @@ async def home(request: Request):
 
 @app.get("/manifest.json")
 async def manifest():
+    return JSONResponse(
+        MANIFEST,
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
+
+
+@app.get("/v132/manifest.json")
+async def manifest_v132():
     return JSONResponse(
         MANIFEST,
         headers={
@@ -1046,6 +1058,26 @@ async def meta(media_type: str, imdb_id: str):
             status_code=502,
             detail=f"Upstream metadata error: {exc.response.status_code}",
         ) from exc
+
+
+
+@app.get("/v132/catalog/{media_type}/{catalog_id}.json")
+async def catalog_v132(media_type: str, catalog_id: str):
+    return await catalog(media_type, catalog_id)
+
+
+@app.get("/v132/catalog/{media_type}/{catalog_id}/{extra_args}.json")
+async def catalog_with_extra_v132(
+    media_type: str,
+    catalog_id: str,
+    extra_args: str,
+):
+    return await catalog_with_extra(media_type, catalog_id, extra_args)
+
+
+@app.get("/v132/meta/{media_type}/{imdb_id}.json")
+async def meta_v132(media_type: str, imdb_id: str):
+    return await meta(media_type, imdb_id)
 
 
 @app.get("/health")

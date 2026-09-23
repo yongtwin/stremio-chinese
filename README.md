@@ -1,4 +1,4 @@
-# Chinese & HK Catalog for Stremio — v1.3
+# Chinese & HK Catalog for Stremio — v1.3.1
 
 A small FastAPI Stremio catalog + metadata addon designed for a mixed-language Stremio setup.
 
@@ -32,13 +32,13 @@ Sorting options:
 
 The selector uses Stremio's `genre` extra slot because Stremio does not expose a portable generic sort dropdown for addon catalogs.
 
-## v1.3 changes
+## v1.3.1 changes
 
 ### Better Chinese actor/director/writer names
 
 TMDB does not reliably localize person names using the normal `language` parameter.
 
-v1.3 uses this order:
+v1.3.1 uses this order:
 
 1. Chinese `original_name`
 2. Chinese `name`
@@ -96,7 +96,7 @@ https://YOUR-PROJECT.vercel.app/health
 You should see:
 
 ```json
-"version": "1.3.0"
+"version": "1.3.1"
 ```
 
 If Stremio keeps an old cached manifest, remove and reinstall the same manifest URL.
@@ -169,3 +169,33 @@ uvicorn app:app --reload --port 8000
 - A defensive 20-season limit is used when enriching a single series detail request on serverless hosting.
 - In-memory cache can be lost on Vercel cold starts; this is expected.
 - No TorBox credential is stored or used by this addon.
+
+
+## v1.3.1 install/cache fix
+
+- Addon ID changed to `com.twin.chinese-hk-catalog.v13`
+- Stremio will treat this as a brand-new addon instead of reusing the old cached addon
+- `/manifest.json` now sends no-cache headers
+
+After deployment, uninstall the old addon and install the same manifest URL again.
+
+
+## v1.3.2 — hard cache-bypass install
+
+Stremio can retain an old addon manifest by transport URL on some clients.
+
+This build uses a completely new install identity:
+
+```text
+Addon ID: com.twin.chinese-hk-catalog.v132
+Version: 1.3.2
+Name: Chinese & HK Catalog v1.3.2
+Install URL: https://YOUR-PROJECT.vercel.app/v132/manifest.json
+```
+
+Use the `/v132/manifest.json` URL for installation. The old `/manifest.json` route
+still exists for diagnostics, but the project homepage's Install button now uses
+the versioned URL.
+
+The version is also included in the visible addon name so you can immediately
+confirm which build Stremio installed.
