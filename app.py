@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 
 APP_NAME = "Chinese & HK Catalog"
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.1"
 
 TMDB_API_TOKEN = os.getenv("TMDB_API_TOKEN", "").strip()
 TMDB_API_KEY = os.getenv("TMDB_API_KEY", "").strip()
@@ -51,7 +51,7 @@ CATALOGS = {
 }
 
 MANIFEST = {
-    "id": "com.twin.chinese-hk-catalog",
+    "id": "com.twin.chinese-hk-catalog.v13",
     "version": APP_VERSION,
     "name": APP_NAME,
     "description": (
@@ -985,7 +985,11 @@ async def home(request: Request):
 async def manifest():
     return JSONResponse(
         MANIFEST,
-        headers={"Cache-Control": "public, max-age=3600"},
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
     )
 
 
