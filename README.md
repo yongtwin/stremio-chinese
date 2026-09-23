@@ -1,4 +1,4 @@
-# Chinese & HK Catalog for Stremio — v1.4.0
+# Chinese & HK Catalog for Stremio — v1.4.1
 
 This version fixes the two issues seen in earlier builds:
 
@@ -85,7 +85,7 @@ Other normal Stremio catalogs:
 After deploying:
 
 ```text
-https://YOUR-PROJECT.vercel.app/v140/manifest.json
+https://YOUR-PROJECT.vercel.app/v141/manifest.json
 ```
 
 ## VERY IMPORTANT: remove older copies
@@ -96,7 +96,7 @@ are still installed, you will see duplicate 中国电影 / 香港电影 rows.
 Uninstall every older "Chinese & HK Catalog" entry and keep only:
 
 ```text
-Chinese & HK Catalog v1.4.0
+Chinese & HK Catalog v1.4.1
 ```
 
 ## Update on Vercel
@@ -120,16 +120,40 @@ should show:
 Then verify:
 
 ```text
-https://YOUR-PROJECT.vercel.app/v140/manifest.json
+https://YOUR-PROJECT.vercel.app/v141/manifest.json
 ```
 
 shows:
 
 ```json
-"id": "com.twin.chinese-hk-catalog.v140",
+"id": "com.twin.chinese-hk-catalog.v141",
 "version": "1.4.0"
 ```
 
 ## TMDB notice
 
 This product uses the TMDB API but is not endorsed or certified by TMDB.
+
+
+## v1.4.1 — series stream fix
+
+Earlier builds localized only the episode objects already supplied by Cinemeta.
+Some China/Hong Kong series have incomplete or missing episode lists in Cinemeta,
+so the detail page could show no usable episode stream IDs.
+
+v1.4.1 builds the episode list directly from TMDB and assigns every episode the
+canonical Stremio/AIOStreams IMDb ID format:
+
+```text
+ttSERIESIMDBID:season:episode
+```
+
+Example:
+
+```text
+tt1234567:1:1
+tt1234567:1:2
+```
+
+This keeps the custom `tch:` parent meta ID for Chinese detail metadata while
+sending normal IMDb episode IDs to AIOStreams/TorBox for playback.
