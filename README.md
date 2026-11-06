@@ -1,9 +1,45 @@
-# Chinese & HK Catalog for Stremio — v1.4.1
+# Chinese & HK Catalog for Stremio — v1.4.2
 
-This version fixes the two issues seen in earlier builds:
+## v1.4.2: fix "No metadata was found!" on detail pages
 
-1. Duplicate China/HK rows caused by having multiple old versions installed.
-2. Chinese catalog items opening an English Cinemeta detail page.
+Symptom: opening some catalog entries (e.g. 仙逆,
+`#/detail/series/tch%3Aseries%3A223911%3Att27432264`) showed **No metadata was
+found!**, **No videos found for this meta!**, and a bogus Season 0 / Episode
+`<tmdb-id>` selector, even though the meta endpoint returned HTTP 200.
+
+Two independent causes, both reproduced in Stremio Web:
+
+1. **CDN-cached responses without CORS headers.** Starlette's `CORSMiddleware`
+   only adds `Access-Control-Allow-Origin` when the request carries an `Origin`
+   header. Meta/catalog responses are `Cache-Control: public`, so Vercel's CDN
+   cached whichever copy came first. If that was a non-browser request (curl, a
+   native app, a health check), every browser got a CORS-blocked copy for up to
+   30 minutes. This is why it happened "sometimes". Fix: CORS headers are now sent
+   on every response.
+2. **Episode objects with both `title` and `name`.** Stremio Core declares
+   `Video.title` with `#[serde(alias = "name")]`, so a video with both keys fails
+   with a duplicate-field error, and that rejects the whole meta. Cinemeta episodes
+   carry `name`; we added a Chinese `title`. Shows where Cinemeta has an episode
+   list (仙逆, 嫁金钗, 完美世界, 凡人修仙传…) always failed. Shows without one
+   (most HK dramas) worked. Fix: episodes now carry only `title` (with Cinemeta's
+   `name` as the fallback text), and `stream`/`streams` are collapsed the same way.
+
+The `tch:` custom ID format was **not** the problem; it renders fine once the
+two issues above are fixed. Addon ID (`com.twin.chinese-hk-catalog.v141`) and all
+meta/video IDs are unchanged, so saved links and library items keep working.
+
+### Metadata vs. playback sources
+
+This addon supplies only catalogs and metadata. A rendered Chinese detail page with
+an episode list means metadata works. Whether **sources** appear after picking an
+episode depends on your stream addons (AIOStreams/TorBox, etc.) having results for
+the IMDb ID this addon hands them (`tt…` for movies, `tt…:season:episode` for
+episodes). An empty source list on a rendered page is a stream-addon matter.
+
+## v1.4.1
+
+1. Series episodes are generated from TMDB even when Cinemeta has no episode list.
+2. Locale fallbacks are checked when the preferred locale returns non-Chinese text.
 
 ## Why detail pages were English before
 
@@ -41,14 +77,17 @@ Stremio therefore requests streams using the IMDb ID, so AIOStreams/TorBox still
 
 ### Series
 
-The meta ID is custom, but episode video IDs stay in Cinemeta's standard format:
+The meta ID is custom. Episodes are built from TMDB season data, with matching
+Cinemeta fields retained when available. Episode video IDs use the standard IMDb format:
 
 ```text
 tt7654321:1:1
 tt7654321:1:2
 ```
 
-Selecting an episode therefore still sends the normal IMDb episode ID to stream addons.
+Season 0 specials are excluded, and no more than 20 seasons are fetched for one detail
+request. Selecting an episode sends `tt...:season:episode` to stream addons, even when
+Cinemeta has no episode metadata.
 
 ## Catalogs
 
@@ -85,8 +124,11 @@ Other normal Stremio catalogs:
 After deploying:
 
 ```text
-https://YOUR-PROJECT.vercel.app/v141/manifest.json
+https://YOUR-PROJECT.vercel.app/manifest.json
 ```
+
+The legacy `/v140/` routes remain available for existing installs; use the stable root
+manifest URL for new installs and updates.
 
 ## VERY IMPORTANT: remove older copies
 
@@ -96,8 +138,12 @@ are still installed, you will see duplicate 中国电影 / 香港电影 rows.
 Uninstall every older "Chinese & HK Catalog" entry and keep only:
 
 ```text
-Chinese & HK Catalog v1.4.1
+Chinese & HK Catalog v1.4.2
 ```
+
+Upgrading from v1.4.1 needs no reinstall: the addon ID is the same and Stremio
+refreshes the manifest from the same URL. If an old copy with ID
+`com.twin.chinese-hk-catalog.v140` is installed, uninstall it.
 
 ## Update on Vercel
 
@@ -114,46 +160,40 @@ https://YOUR-PROJECT.vercel.app/health
 should show:
 
 ```json
-"version": "1.4.0"
+"version": "1.4.2"
 ```
 
 Then verify:
 
 ```text
-https://YOUR-PROJECT.vercel.app/v141/manifest.json
+https://YOUR-PROJECT.vercel.app/manifest.json
 ```
 
 shows:
 
 ```json
 "id": "com.twin.chinese-hk-catalog.v141",
-"version": "1.4.0"
+"version": "1.4.2"
 ```
+
+Deploying purges Vercel's CDN cache, which also clears any CORS-less copies cached
+before v1.4.2. To confirm the CORS fix, request a meta URL **without** an Origin
+header and check that `access-control-allow-origin: *` is still present:
+
+```bash
+curl -sI "https://YOUR-PROJECT.vercel.app/meta/series/tch%3Aseries%3A223911%3Att27432264.json"
+```
+
+## Tests
+
+```bash
+pip install -r requirements.txt
+python -m unittest discover -s tests -v
+```
+
+`StremioClientCompatibilityTests` mirrors Stremio Core's `Video` deserialization
+rules and the CORS-without-Origin case.
 
 ## TMDB notice
 
 This product uses the TMDB API but is not endorsed or certified by TMDB.
-
-
-## v1.4.1 — series stream fix
-
-Earlier builds localized only the episode objects already supplied by Cinemeta.
-Some China/Hong Kong series have incomplete or missing episode lists in Cinemeta,
-so the detail page could show no usable episode stream IDs.
-
-v1.4.1 builds the episode list directly from TMDB and assigns every episode the
-canonical Stremio/AIOStreams IMDb ID format:
-
-```text
-ttSERIESIMDBID:season:episode
-```
-
-Example:
-
-```text
-tt1234567:1:1
-tt1234567:1:2
-```
-
-This keeps the custom `tch:` parent meta ID for Chinese detail metadata while
-sending normal IMDb episode IDs to AIOStreams/TorBox for playback.

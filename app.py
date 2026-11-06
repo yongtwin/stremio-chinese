@@ -8,11 +8,10 @@ from urllib.parse import quote, unquote
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
-APP_NAME = "Chinese & HK Catalog v1.4.1"
-APP_VERSION = "1.4.1"
+APP_NAME = "Chinese & HK Catalog v1.4.2"
+APP_VERSION = "1.4.2"
 
 TMDB_API_TOKEN = os.getenv("TMDB_API_TOKEN", "").strip()
 TMDB_API_KEY = os.getenv("TMDB_API_KEY", "").strip()
@@ -51,6 +50,7 @@ CATALOGS = {
 }
 
 MANIFEST = {
+    # Must stay equal to the deployed ID so existing installs update in place.
     "id": "com.twin.chinese-hk-catalog.v141",
     "version": APP_VERSION,
     "name": APP_NAME,
@@ -109,13 +109,26 @@ http = httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=8.0))
 tmdb_sem = asyncio.Semaphore(10)
 
 app = FastAPI(title=APP_NAME, version=APP_VERSION)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["GET", "OPTIONS"],
-    allow_headers=["*"],
-)
+
+# Starlette's CORSMiddleware only adds Access-Control-Allow-Origin when the request
+# carries an Origin header. Our responses are `Cache-Control: public`, so Vercel's CDN
+# would cache whichever copy came first; a request without Origin (curl, a native app,
+# a server-side proxy) then poisoned the cached copy for every browser, and Stremio Web
+# showed "No metadata was found!" with a CORS error. Always send the CORS headers.
+CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Headers": "*",
+}
+
+
+@app.middleware("http")
+async def always_cors(request: Request, call_next):
+    if request.method == "OPTIONS":
+        return Response(status_code=204, headers=CORS_HEADERS)
+    response = await call_next(request)
+    response.headers.update(CORS_HEADERS)
+    return response
 
 
 def require_tmdb_credentials() -> None:
@@ -171,7 +184,7 @@ def image_url(path: str | None, size: str = "w500") -> str | None:
 
 
 def contains_cjk(text: str | None) -> bool:
-    if not text:
+    if not isinstance(text, str) or not text:
         return False
     return bool(re.search(r"[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]", text))
 
@@ -258,7 +271,7 @@ def parse_custom_id(media_type: str, item_id: str) -> tuple[int, str] | None:
     if prefix != "tch" or encoded_type != media_type:
         return None
 
-    if not imdb_id.startswith("tt"):
+    if not re.fullmatch(r"tt\d+", imdb_id):
         return None
 
     try:
@@ -440,17 +453,20 @@ def merge_localized_details(
     title_key = "title" if tmdb_type == "movie" else "name"
     original_key = "original_title" if tmdb_type == "movie" else "original_name"
 
-    if not merged.get(title_key):
-        for item in fallbacks:
-            if item.get(title_key):
-                merged[title_key] = item[title_key]
-                break
+    for field in (title_key, "overview"):
+        if contains_cjk(merged.get(field)):
+            continue
 
-    if not merged.get("overview"):
-        for item in fallbacks:
-            if item.get("overview"):
-                merged["overview"] = item["overview"]
-                break
+        localized = next(
+            (item.get(field) for item in fallbacks if contains_cjk(item.get(field))),
+            None,
+        )
+        if localized:
+            merged[field] = localized
+        elif not merged.get(field):
+            fallback = next((item.get(field) for item in fallbacks if item.get(field)), None)
+            if fallback:
+                merged[field] = fallback
 
     if not merged.get(title_key):
         merged[title_key] = english.get(title_key) or english.get(original_key)
@@ -466,10 +482,10 @@ async def get_chinese_bundle(
     Returns:
       localized details, country (CN/HK), embedded credits, locale preference chain.
 
-    API reduction in v1.3:
+    API reduction:
       - English detail determines origin.
       - Preferred Chinese detail appends credits in the same request.
-      - Fallback locale details are requested only if title/overview is missing.
+      - Fallback locale details are requested only for fields without CJK text.
     """
     english = await get_details(tmdb_type, tmdb_id, "en-US", False)
     countries = country_codes(english)
@@ -487,13 +503,17 @@ async def get_chinese_bundle(
     fallbacks: list[dict[str, Any]] = []
     title_key = "title" if tmdb_type == "movie" else "name"
 
-    if not preferred.get(title_key) or not preferred.get("overview"):
+    if not contains_cjk(preferred.get(title_key)) or not contains_cjk(preferred.get("overview")):
         for locale in locales[1:]:
             item = await get_details(tmdb_type, tmdb_id, locale, False)
             fallbacks.append(item)
 
-            have_title = preferred.get(title_key) or any(x.get(title_key) for x in fallbacks)
-            have_overview = preferred.get("overview") or any(x.get("overview") for x in fallbacks)
+            have_title = contains_cjk(preferred.get(title_key)) or any(
+                contains_cjk(x.get(title_key)) for x in fallbacks
+            )
+            have_overview = contains_cjk(preferred.get("overview")) or any(
+                contains_cjk(x.get("overview")) for x in fallbacks
+            )
 
             if have_title and have_overview:
                 break
@@ -694,13 +714,37 @@ async def get_season_details(
     return data
 
 
-def season_has_useful_localization(season: dict[str, Any]) -> bool:
-    for episode in season.get("episodes") or []:
-        if not isinstance(episode, dict):
-            continue
-        if contains_cjk(episode.get("name")) or contains_cjk(episode.get("overview")):
-            return True
-    return False
+def make_episode_id(imdb_id: str, season_number: int, episode_number: int) -> str:
+    if not re.fullmatch(r"tt\d+", imdb_id):
+        raise ValueError("A canonical IMDb series ID is required")
+    if (
+        type(season_number) is not int
+        or type(episode_number) is not int
+        or season_number <= 0
+        or episode_number <= 0
+    ):
+        raise ValueError("Season and episode numbers must be positive")
+    return f"{imdb_id}:{season_number}:{episode_number}"
+
+
+def season_numbers_from_details(details: dict[str, Any]) -> list[int]:
+    seasons = details.get("seasons") or []
+    numbers = sorted(
+        {
+            season["season_number"]
+            for season in seasons
+            if isinstance(season, dict)
+            and type(season.get("season_number")) is int
+            and season["season_number"] > 0
+        }
+    )
+
+    if not numbers:
+        count = details.get("number_of_seasons")
+        if type(count) is int and count > 0:
+            numbers = list(range(1, count + 1))
+
+    return numbers[:20]
 
 
 async def localized_season(
@@ -708,171 +752,180 @@ async def localized_season(
     season_number: int,
     locales: list[str],
 ) -> dict[str, Any]:
-    """
-    Try the preferred Chinese locale first.
-    Only query fallbacks when the season has no useful Chinese episode text.
-    """
+    episodes_by_number: dict[int, dict[str, Any]] = {}
+
     for locale in locales:
         data = await get_season_details(tv_id, season_number, locale)
-        if season_has_useful_localization(data):
-            return data
+        for episode in data.get("episodes") or []:
+            if not isinstance(episode, dict):
+                continue
 
-    # Return the preferred locale even if TMDB has no Chinese episode translation,
-    # allowing the caller to preserve Cinemeta text for missing fields.
-    return await get_season_details(tv_id, season_number, locales[0])
+            episode_number = episode.get("episode_number")
+            if type(episode_number) is not int or episode_number <= 0:
+                continue
+
+            merged = episodes_by_number.setdefault(episode_number, dict(episode))
+            for field in ("name", "overview"):
+                if contains_cjk(episode.get(field)) and not contains_cjk(merged.get(field)):
+                    merged[field] = episode[field]
+
+            for field in ("air_date", "still_path", "runtime"):
+                if not merged.get(field) and episode.get(field):
+                    merged[field] = episode[field]
+
+        rows = list(episodes_by_number.values())
+        if rows and all(
+            contains_cjk(episode.get("name"))
+            and contains_cjk(episode.get("overview"))
+            for episode in rows
+        ):
+            break
+
+    return {"episodes": list(episodes_by_number.values())}
 
 
-def build_tmdb_episode_videos(
+def normalize_video_aliases(video: dict[str, Any]) -> dict[str, Any]:
+    """
+    Stremio Core deserializes Video with `#[serde(alias = "name")] title` and
+    `#[serde(alias = "stream")] streams`. A video carrying both spellings fails with
+    a serde "duplicate field" error, which rejects the ENTIRE meta response and
+    Stremio shows "No metadata was found!". Cinemeta videos use `name`, while we set
+    a localized `title`, so collapse every alias pair to a single key.
+    """
+    name = video.pop("name", None)
+    if not video.get("title") and isinstance(name, str) and name:
+        video["title"] = name
+
+    if "stream" in video:
+        stream = video.pop("stream")
+        if "streams" not in video and stream is not None:
+            video["streams"] = stream
+
+    return video
+
+
+def build_series_videos(
     imdb_id: str,
-    existing_videos: list[dict[str, Any]] | None,
     seasons_by_number: dict[int, dict[str, Any]],
+    existing_videos: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """
-    Build canonical Stremio series Video objects directly from TMDB seasons.
-
-    The important part is the video ID:
-        tt<series-imdb-id>:<season>:<episode>
-
-    This is the standard Stremio/Cinemeta series stream ID shape used by stream
-    addons such as AIOStreams. We no longer depend on Cinemeta already having an
-    episode list for a Chinese/HK show.
-    """
-    existing_lookup: dict[tuple[int, int], dict[str, Any]] = {}
-
-    for video in existing_videos or []:
+    existing_by_episode: dict[tuple[int, int], dict[str, Any]] = {}
+    for video in existing_videos:
         if not isinstance(video, dict):
             continue
+        season_number = video.get("season")
+        episode_number = video.get("episode")
+        if (
+            type(season_number) is int
+            and season_number > 0
+            and type(episode_number) is int
+            and episode_number > 0
+        ):
+            existing_by_episode.setdefault((season_number, episode_number), video)
 
-        season = video.get("season")
-        episode = video.get("episode")
+    season_numbers = sorted(
+        number
+        for number in seasons_by_number
+        if type(number) is int and number > 0
+    )[:20]
+    if not season_numbers:
+        season_numbers = sorted({season for season, _ in existing_by_episode})[:20]
+    allowed_seasons = set(season_numbers)
 
-        if isinstance(season, int) and isinstance(episode, int):
-            existing_lookup[(season, episode)] = video
+    videos_by_episode: dict[tuple[int, int], dict[str, Any]] = {}
+    for season_number in season_numbers:
+        season = seasons_by_number.get(season_number) or {}
+        for episode in season.get("episodes") or []:
+            if not isinstance(episode, dict):
+                continue
 
-    generated: list[dict[str, Any]] = []
+            episode_number = episode.get("episode_number")
+            if type(episode_number) is not int or episode_number <= 0:
+                continue
 
-    for season_number in sorted(seasons_by_number):
-        season = seasons_by_number[season_number]
+            key = (season_number, episode_number)
+            video = normalize_video_aliases(dict(existing_by_episode.get(key) or {}))
+            video.update(
+                {
+                    "id": make_episode_id(imdb_id, season_number, episode_number),
+                    "season": season_number,
+                    "episode": episode_number,
+                }
+            )
 
-        episodes = [
-            episode
-            for episode in (season.get("episodes") or [])
-            if isinstance(episode, dict)
-            and isinstance(episode.get("episode_number"), int)
-        ]
-        episodes.sort(key=lambda episode: int(episode["episode_number"]))
+            localized_title = episode.get("name")
+            if contains_cjk(localized_title):
+                video["title"] = localized_title
+            elif not video.get("title"):
+                video["title"] = f"Episode {episode_number}"
 
-        for episode in episodes:
-            episode_number = int(episode["episode_number"])
-            item = dict(existing_lookup.get((season_number, episode_number), {}))
-
-            # Always force the canonical IMDb series episode stream ID.
-            item["id"] = f"{imdb_id}:{season_number}:{episode_number}"
-            item["season"] = season_number
-            item["episode"] = episode_number
-
-            if episode.get("name"):
-                item["title"] = episode["name"]
-            elif not item.get("title"):
-                item["title"] = f"Episode {episode_number}"
-
-            if episode.get("overview"):
-                item["overview"] = episode["overview"]
-
-            still = image_url(episode.get("still_path"), "w500")
-            if still:
-                item["thumbnail"] = still
+            localized_overview = episode.get("overview")
+            if contains_cjk(localized_overview):
+                video["overview"] = localized_overview
+            elif not video.get("overview") and localized_overview:
+                video["overview"] = localized_overview
 
             air_date = episode.get("air_date")
             if air_date:
-                item["released"] = f"{air_date}T00:00:00.000Z"
+                video["released"] = f"{air_date}T00:00:00.000Z"
+                video["releaseInfo"] = air_date[:4]
 
-            generated.append(item)
+            thumbnail = image_url(episode.get("still_path"), "w500")
+            if thumbnail:
+                video["thumbnail"] = thumbnail
 
-    return generated
+            runtime = episode.get("runtime")
+            if runtime:
+                video["runtime"] = f"{runtime} min"
 
+            videos_by_episode[key] = video
 
-def series_season_numbers(
-    series_details: dict[str, Any],
-    existing_videos: list[dict[str, Any]] | None,
-) -> list[int]:
-    numbers: set[int] = set()
-
-    # Preferred source: TMDB's season list on the series detail.
-    for season in series_details.get("seasons") or []:
-        if not isinstance(season, dict):
+    for key, existing in existing_by_episode.items():
+        if key[0] not in allowed_seasons or key in videos_by_episode:
             continue
+        video = normalize_video_aliases(dict(existing))
+        video["id"] = make_episode_id(imdb_id, *key)
+        if not video.get("title"):
+            video["title"] = f"Episode {key[1]}"
+        videos_by_episode[key] = video
 
-        number = season.get("season_number")
-        episode_count = season.get("episode_count")
-
-        # Season 0 is specials; skip it for the main drama episode list.
-        if (
-            isinstance(number, int)
-            and number > 0
-            and (not isinstance(episode_count, int) or episode_count > 0)
-        ):
-            numbers.add(number)
-
-    # Fallback to whatever Cinemeta already knew.
-    if not numbers:
-        for video in existing_videos or []:
-            if not isinstance(video, dict):
-                continue
-            number = video.get("season")
-            if isinstance(number, int) and number > 0:
-                numbers.add(number)
-
-    # Final fallback for rare TMDB responses without a seasons array.
-    if not numbers:
-        count = series_details.get("number_of_seasons")
-        if isinstance(count, int) and count > 0:
-            numbers.update(range(1, min(count, 20) + 1))
-
-    # Defensive bound for serverless execution.
-    return sorted(numbers)[:20]
+    return [videos_by_episode[key] for key in sorted(videos_by_episode)]
 
 
 async def localize_series_episodes(
     meta: dict[str, Any],
     tv_id: int,
     imdb_id: str,
-    locales: list[str],
     series_details: dict[str, Any],
+    locales: list[str],
 ) -> None:
-    """
-    Generate the complete episode list from TMDB, while preserving canonical IMDb
-    stream IDs so AIOStreams/TorBox can resolve each selected episode.
-    """
-    existing_videos = meta.get("videos")
-    if not isinstance(existing_videos, list):
-        existing_videos = []
-
-    season_numbers = series_season_numbers(series_details, existing_videos)
-    if not season_numbers:
-        return
-
+    season_numbers = season_numbers_from_details(series_details)
     results = await asyncio.gather(
         *(localized_season(tv_id, number, locales) for number in season_numbers),
         return_exceptions=True,
     )
 
     seasons: dict[int, dict[str, Any]] = {}
-
     for number, result in zip(season_numbers, results):
-        if isinstance(result, Exception):
-            continue
-        if isinstance(result, dict) and result.get("episodes"):
-            seasons[number] = result
+        # Keep the season eligible so a temporary TMDB failure does not discard
+        # matching canonical episodes already supplied by Cinemeta.
+        seasons[number] = result if not isinstance(result, Exception) else {"episodes": []}
 
-    if not seasons:
-        # Preserve Cinemeta's existing list if TMDB season loading failed.
-        return
+    existing_videos = meta.get("videos")
+    if not isinstance(existing_videos, list):
+        existing_videos = []
 
-    generated = build_tmdb_episode_videos(imdb_id, existing_videos, seasons)
+    meta["videos"] = build_series_videos(imdb_id, seasons, existing_videos)
 
-    if generated:
-        meta["videos"] = generated
+
+def sanitize_meta_for_stremio(meta: dict[str, Any]) -> None:
+    videos = meta.get("videos")
+    if isinstance(videos, list):
+        meta["videos"] = [
+            normalize_video_aliases(dict(video))
+            for video in videos
+            if isinstance(video, dict)
+        ]
 
 
 def tmdb_fallback_meta(
@@ -936,7 +989,7 @@ async def metadata_proxy(media_type: str, item_id: str) -> dict[str, Any]:
 
     Playback stays compatible:
       - movie -> behaviorHints.defaultVideoId = IMDb tt... ID
-      - series -> TMDB episodes are emitted with canonical tt...:season:episode IDs
+      - series -> Cinemeta episode IDs remain tt...:season:episode
     """
     if media_type not in {"movie", "series"}:
         return {"meta": None}
@@ -946,7 +999,7 @@ async def metadata_proxy(media_type: str, item_id: str) -> dict[str, Any]:
         return {"meta": None}
 
     tmdb_id, imdb_id = parsed
-    cache_key = f"meta-custom:{media_type}:{item_id}:v141"
+    cache_key = f"meta-custom:{media_type}:{item_id}:v142"
     cached = cache.get(cache_key)
     if cached is not None:
         return cached
@@ -988,13 +1041,13 @@ async def metadata_proxy(media_type: str, item_id: str) -> dict[str, Any]:
             hints["defaultVideoId"] = imdb_id
             meta["behaviorHints"] = hints
 
+        sanitize_meta_for_stremio(meta)
         payload = {"meta": meta}
         cache.set(cache_key, payload, 12 * 60 * 60)
         return payload
 
-    # Start from Cinemeta internally for useful baseline metadata.
-    # Series episode IDs are rebuilt from TMDB below, so playback does not depend
-    # on Cinemeta having an episode list.
+    # Start from Cinemeta internally so we retain useful IMDb metadata and,
+    # for series, its canonical tt...:season:episode video IDs.
     meta = dict(cine or tmdb_fallback_meta(media_type, imdb_id, chinese))
     title_key = "title" if tmdb_type == "movie" else "name"
 
@@ -1048,15 +1101,8 @@ async def metadata_proxy(media_type: str, item_id: str) -> dict[str, Any]:
 
     if media_type == "series" and locales:
         try:
-            # Build canonical tt<series>:season:episode IDs directly from TMDB.
-            # This keeps streams working even when Cinemeta has no episode list.
-            await localize_series_episodes(
-                meta,
-                tmdb_id,
-                imdb_id,
-                locales,
-                chinese,
-            )
+            # Build the episode list from TMDB; preserve matching Cinemeta fields.
+            await localize_series_episodes(meta, tmdb_id, imdb_id, chinese, locales)
         except Exception:
             pass
 
@@ -1078,6 +1124,7 @@ async def metadata_proxy(media_type: str, item_id: str) -> dict[str, Any]:
         # the visible meta identity; stream identity is carried by defaultVideoId.
         meta.pop("videos", None)
 
+    sanitize_meta_for_stremio(meta)
     payload = {"meta": meta}
     cache.set(cache_key, payload, 12 * 60 * 60)
     return payload
@@ -1087,8 +1134,8 @@ async def metadata_proxy(media_type: str, item_id: str) -> dict[str, Any]:
 async def home(request: Request):
     host = request.headers.get("host", "your-project.vercel.app")
     scheme = request.headers.get("x-forwarded-proto", request.url.scheme or "https")
-    manifest_url = f"{scheme}://{host}/v141/manifest.json"
-    stremio_url = f"stremio://{host}/v141/manifest.json"
+    manifest_url = f"{scheme}://{host}/manifest.json"
+    stremio_url = f"stremio://{host}/manifest.json"
     configured = bool(TMDB_API_TOKEN or TMDB_API_KEY)
 
     status = "✅ TMDB configured" if configured else "⚠️ TMDB token not configured"
@@ -1133,8 +1180,8 @@ async def manifest():
     )
 
 
-@app.get("/v141/manifest.json")
-async def manifest_v141():
+@app.get("/v140/manifest.json")
+async def manifest_v140():
     return JSONResponse(
         MANIFEST,
         headers={
@@ -1201,13 +1248,13 @@ async def meta(media_type: str, item_id: str):
 
 
 
-@app.get("/v141/catalog/{media_type}/{catalog_id}.json")
-async def catalog_v141(media_type: str, catalog_id: str):
+@app.get("/v140/catalog/{media_type}/{catalog_id}.json")
+async def catalog_v140(media_type: str, catalog_id: str):
     return await catalog(media_type, catalog_id)
 
 
-@app.get("/v141/catalog/{media_type}/{catalog_id}/{extra_args}.json")
-async def catalog_with_extra_v141(
+@app.get("/v140/catalog/{media_type}/{catalog_id}/{extra_args}.json")
+async def catalog_with_extra_v140(
     media_type: str,
     catalog_id: str,
     extra_args: str,
@@ -1215,8 +1262,8 @@ async def catalog_with_extra_v141(
     return await catalog_with_extra(media_type, catalog_id, extra_args)
 
 
-@app.get("/v141/meta/{media_type}/{item_id}.json")
-async def meta_v141(media_type: str, item_id: str):
+@app.get("/v140/meta/{media_type}/{item_id}.json")
+async def meta_v140(media_type: str, item_id: str):
     return await meta(media_type, item_id)
 
 
