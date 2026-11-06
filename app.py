@@ -15,8 +15,10 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
-APP_NAME = "Chinese & HK Catalog v1.6.0"
-APP_VERSION = "1.6.0"
+APP_NAME = "Chinese & HK Catalog v1.6.1"
+APP_VERSION = "1.6.1"
+# Plain link only: no widget script, so the pages stay fast and nothing is tracked.
+SUPPORT_URL = "https://ko-fi.com/yongtwinchin"
 
 # httpx logs full request URLs at INFO, which would include a v3 `api_key` parameter.
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -218,7 +220,8 @@ def build_manifest(config: AddonConfig = DEFAULT_CONFIG) -> dict[str, Any]:
         "description": (
             "China/Hong Kong/Taiwan movie and TV catalogs with Chinese metadata, "
             "search, localized credits, logos, trailers and episode titles. "
-            "Other IMDb titles remain in Cinemeta English."
+            "Other IMDb titles remain in Cinemeta English. "
+            "Support: ko-fi.com/yongtwinchin"
         ),
         "resources": [
             "catalog",
@@ -1745,6 +1748,7 @@ async def home(request: Request):
     body{{font-family:system-ui,sans-serif;max-width:760px;margin:48px auto;padding:0 20px;line-height:1.55}}
     code{{background:#f3f3f3;padding:2px 6px;border-radius:5px;word-break:break-all}}
     a.button{{display:inline-block;padding:10px 16px;background:#5b45ff;color:#fff;text-decoration:none;border-radius:8px}}
+    a.button.kofi{{background:#13c3ff;color:#102a43;margin-left:10px}}
     .muted{{opacity:.72;font-size:.92rem}}
   </style>
 </head>
@@ -1755,7 +1759,8 @@ async def home(request: Request):
   <p>CN/HK/TW: 中文详情、海报、预告片由本 addon 独立提供；播放仍使用 IMDb ID 交给 AIOStreams/TorBox。</p>
   <p>其他国家：保留 Cinemeta English metadata。</p>
   <p>{status}</p>
-  <p><a class="button" href="/configure">Install in Stremio</a></p>
+  <p><a class="button" href="/configure">Install in Stremio</a><a class="button kofi" href="{SUPPORT_URL}" target="_blank" rel="noopener">☕ 请我喝杯咖啡 · Support on Ko-fi</a></p>
+  <p class="muted">这个 addon 免费且无广告；如果觉得好用，欢迎支持服务器与开发。</p>
   <p class="muted">Install 前需要先在设置页填写你自己的 TMDB API key，并选择简繁体与分类。
   Already installed from <code>{manifest_url}</code>? It keeps working unchanged.</p>
   <p>This addon provides catalogs and metadata only. It does not provide streams.</p>
@@ -1808,9 +1813,10 @@ CONFIGURE_PAGE = """<!doctype html>
     <p>Or paste this URL into Stremio's addon search box:<br>
       <code id="url"></code> <button class="plain" id="copy" type="button">Copy</button></p>
     <p class="muted">The link contains your TMDB key. Keep it private.</p>
+    <p class="muted">Enjoying it? <a href="__SUPPORT__" target="_blank" rel="noopener">☕ Support on Ko-fi</a></p>
   </div>
 
-  <p class="muted"><a href="/">← Back</a> · This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
+  <p class="muted"><a href="/">← Back</a> · <a href="__SUPPORT__" target="_blank" rel="noopener">☕ Ko-fi</a> · This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
 
 <script>
 const STATE = __STATE__;
@@ -1921,7 +1927,11 @@ def render_configure_page(config: AddonConfig) -> str:
         .replace(">", "\\u003e")
         .replace("&", "\\u0026")
     )
-    return CONFIGURE_PAGE.replace("__NAME__", APP_NAME).replace("__STATE__", payload)
+    return (
+        CONFIGURE_PAGE.replace("__NAME__", APP_NAME)
+        .replace("__SUPPORT__", SUPPORT_URL)
+        .replace("__STATE__", payload)  # last: the JSON must never be re-scanned
+    )
 
 
 def config_from_segment(segment: str) -> AddonConfig:
@@ -2070,6 +2080,7 @@ async def health():
         "tmdbConfigured": bool(TMDB_API_TOKEN or TMDB_API_KEY),
         "sharedCache": bool(REDIS_URL and REDIS_TOKEN),
         "version": APP_VERSION,
+        "supportUrl": SUPPORT_URL,
         "features": [
             "CN/HK/TW Chinese metadata",
             "native-name credit aliases",

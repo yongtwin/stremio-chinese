@@ -652,5 +652,44 @@ class SharedCacheTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(await app.redis_command("GET", "k"))
 
 
+class SupportLinkTests(unittest.TestCase):
+    URL = "https://ko-fi.com/yongtwinchin"
+
+    def test_home_page_links_to_kofi_in_a_new_tab(self):
+        with TestClient(app.app) as client:
+            home = client.get("/").text
+        self.assertIn(f'href="{self.URL}"', home)
+        self.assertIn('target="_blank" rel="noopener"', home)
+        self.assertIn("kofi", home)
+        # Install stays the primary action and comes first.
+        self.assertLess(home.index('href="/configure"'), home.index(self.URL))
+
+    def test_configure_pages_link_to_kofi(self):
+        segment = app.AddonConfig("hans", ("cn_movies",)).encode()
+        with TestClient(app.app) as client:
+            pages = [client.get("/configure").text, client.get(f"/{segment}/configure").text]
+        for page in pages:
+            self.assertGreaterEqual(page.count(f'href="{self.URL}"'), 2)  # footer + install area
+            self.assertNotIn("__SUPPORT__", page)
+            self.assertNotIn("__NAME__", page)
+
+    def test_manifest_description_mentions_kofi_for_every_manifest(self):
+        segment = app.AddonConfig("hant", ("tw_series",), V3_KEY).encode()
+        with TestClient(app.app) as client:
+            manifests = [
+                client.get("/manifest.json").json(),
+                client.get("/v140/manifest.json").json(),
+                client.get(f"/{segment}/manifest.json").json(),
+            ]
+        for manifest in manifests:
+            self.assertIn("ko-fi.com/yongtwinchin", manifest["description"])
+            self.assertEqual(manifest["id"], "com.twin.chinese-hk-catalog.v141")
+        self.assertIn("ko-fi.com/yongtwinchin", app.MANIFEST["description"])
+
+    def test_health_reports_support_url(self):
+        with TestClient(app.app) as client:
+            self.assertEqual(client.get("/health").json()["supportUrl"], self.URL)
+
+
 if __name__ == "__main__":
     unittest.main()

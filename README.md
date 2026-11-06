@@ -1,4 +1,13 @@
-# Chinese & HK Catalog for Stremio — v1.6.0
+# Chinese & HK Catalog for Stremio — v1.6.1
+
+## Support
+
+This addon is free and has no ads. If it's useful to you, you can help cover the server and
+development costs: [☕ ko-fi.com/yongtwinchin](https://ko-fi.com/yongtwinchin).
+
+v1.6.1 adds that link to the home page, the `/configure` page and the manifest description
+(which Stremio shows in its install dialog). It is a plain link: no widget, no third-party
+script and no tracking.
 
 ## v1.6.0
 
@@ -247,7 +256,7 @@ are still installed, you will see duplicate 中国电影 / 香港电影 rows.
 Uninstall every older "Chinese & HK Catalog" entry and keep only:
 
 ```text
-Chinese & HK Catalog v1.6.0
+Chinese & HK Catalog v1.6.1
 ```
 
 Upgrading from any v1.4.x or v1.5.x needs no reinstall: the addon ID is the same and Stremio
@@ -273,7 +282,7 @@ https://YOUR-PROJECT.vercel.app/health
 should show:
 
 ```json
-"version": "1.6.0"
+"version": "1.6.1"
 ```
 
 Then verify:
@@ -286,7 +295,7 @@ shows:
 
 ```json
 "id": "com.twin.chinese-hk-catalog.v141",
-"version": "1.6.0"
+"version": "1.6.1"
 ```
 
 Deploying purges Vercel's CDN cache, which also clears any CORS-less copies cached
