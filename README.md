@@ -1,4 +1,37 @@
-# Chinese & HK Catalog for Stremio — v1.4.3
+# Chinese & HK Catalog for Stremio — v1.5.0
+
+## v1.5.0
+
+### Search by Chinese title
+
+Every catalog now accepts Stremio's `search` extra, so typing 仙逆 or 無間道 in
+Stremio's search bar returns results from this addon (TMDB search, localized
+names). Results are split into the same four rows as the catalogs: a title lands
+in 🇭🇰 if TMDB lists Hong Kong as a country, otherwise 🇨🇳 if it lists China.
+Taiwanese and other titles are not shown.
+
+### Titles without an IMDb ID are no longer hidden
+
+Earlier versions dropped every TMDB title that had no IMDb ID, which hid many
+mainland dramas and donghua. They now appear with:
+
+| | Meta ID | Stream ID sent to stream addons |
+| --- | --- | --- |
+| With IMDb | `tch:series:<tmdb>:tt…` | `tt…` / `tt…:season:episode` |
+| Without IMDb | `tch:series:<tmdb>` | `tmdb:<tmdb>` / `tmdb:<tmdb>:season:episode` |
+
+AIOStreams' built-in debrid/TorBox addons accept `tmdb:` IDs. Stream addons that only
+support IMDb (`tt`) IDs will not return sources for these titles; Stremio simply
+doesn't ask them. Titles keep their existing IDs. If a lookup of the IMDb ID fails
+temporarily, the title is skipped from that catalog page instead of being given a
+second, different ID.
+
+### Chinese title logos
+
+The detail page used Cinemeta's English title art (e.g. "Renegade Immortal"). It
+now uses TMDB's Chinese-language logo when one exists (traditional for HK titles,
+simplified for CN titles), fetched in the same TMDB request as the credits. Without
+a Chinese logo, the English one is removed and Stremio shows the Chinese name.
 
 ## v1.4.2: fix "No metadata was found!" on detail pages
 
@@ -138,12 +171,16 @@ are still installed, you will see duplicate 中国电影 / 香港电影 rows.
 Uninstall every older "Chinese & HK Catalog" entry and keep only:
 
 ```text
-Chinese & HK Catalog v1.4.3
+Chinese & HK Catalog v1.5.0
 ```
 
-Upgrading from v1.4.1 or v1.4.2 needs no reinstall: the addon ID is the same and Stremio
+Upgrading from any v1.4.x needs no reinstall: the addon ID is the same and Stremio
 refreshes the manifest from the same URL. If an old copy with ID
 `com.twin.chinese-hk-catalog.v140` is installed, uninstall it.
+
+Search (new in v1.5.0) is declared in the manifest, so it starts working once
+Stremio refreshes its stored copy. To get it immediately, open the install URL
+again and click Install (or Update); library and watch history are kept.
 
 ## Update on Vercel
 
@@ -160,7 +197,7 @@ https://YOUR-PROJECT.vercel.app/health
 should show:
 
 ```json
-"version": "1.4.3"
+"version": "1.5.0"
 ```
 
 Then verify:
@@ -173,7 +210,7 @@ shows:
 
 ```json
 "id": "com.twin.chinese-hk-catalog.v141",
-"version": "1.4.3"
+"version": "1.5.0"
 ```
 
 Deploying purges Vercel's CDN cache, which also clears any CORS-less copies cached

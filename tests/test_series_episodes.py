@@ -16,12 +16,12 @@ class SeriesEpisodeMetadataTests(unittest.IsolatedAsyncioTestCase):
         catalog_ids = {catalog["id"] for catalog in manifest["catalogs"]}
         # Same ID as the deployed addon so existing installs update in place.
         self.assertEqual(manifest["id"], "com.twin.chinese-hk-catalog.v141")
-        self.assertEqual(manifest["version"], "1.4.3")
+        self.assertEqual(manifest["version"], "1.5.0")
         self.assertEqual(len(manifest["catalogs"]), 4)
         self.assertEqual(catalog_ids, {"cn_movies", "hk_movies", "cn_series", "hk_series"})
         self.assertIn('href="stremio://testserver/manifest.json"', install_response.text)
         self.assertIn("http://testserver/manifest.json", install_response.text)
-        self.assertEqual(health_response.json()["version"], "1.4.3")
+        self.assertEqual(health_response.json()["version"], "1.5.0")
 
     async def test_hong_kong_metadata_uses_traditional_chinese_fallback_when_present(self):
         english = {
@@ -429,6 +429,204 @@ class StremioClientCompatibilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(preflight.status_code, (200, 204))
         self.assertEqual(preflight.headers["access-control-allow-origin"], "*")
 
+
+
+class TmdbOnlyTitleTests(unittest.IsolatedAsyncioTestCase):
+    def test_custom_id_round_trips_with_and_without_imdb(self):
+        self.assertEqual(app.make_custom_id("series", 5, "tt1"), "tch:series:5:tt1")
+        self.assertEqual(app.make_custom_id("series", 5, None), "tch:series:5")
+        self.assertEqual(app.parse_custom_id("series", "tch:series:5:tt1"), (5, "tt1"))
+        self.assertEqual(app.parse_custom_id("series", "tch:series:5"), (5, None))
+        for bad in ("tch:series:x", "tch:movie:5", "tch:series:5:xx1", "tch:series:0"):
+            with self.subTest(bad=bad):
+                self.assertIsNone(app.parse_custom_id("series", bad))
+        self.assertEqual(app.make_episode_id("tmdb:5", 1, 2), "tmdb:5:1:2")
+
+    async def test_catalog_keeps_titles_without_imdb_but_skips_failed_lookups(self):
+        results = [
+            {"id": 1, "name": "有IMDb", "poster_path": "/a.jpg"},
+            {"id": 2, "name": "无IMDb", "poster_path": "/b.jpg"},
+            {"id": 3, "name": "查询失败", "poster_path": "/c.jpg"},
+        ]
+
+        async def imdb_lookup(_type, tmdb_id):
+            if tmdb_id == 3:
+                raise RuntimeError("TMDB timeout")
+            return "tt0000001" if tmdb_id == 1 else None
+
+        with patch.object(app, "imdb_id_for_tmdb", side_effect=imdb_lookup):
+            series = await app.catalog_metas("series", "tv", results)
+            movies = await app.catalog_metas("movie", "movie", results)
+
+        self.assertEqual([m["id"] for m in series], ["tch:series:1:tt0000001", "tch:series:2"])
+        self.assertEqual(
+            [m["behaviorHints"]["defaultVideoId"] for m in movies],
+            ["tt0000001", "tmdb:2"],
+        )
+
+    async def test_tmdb_only_series_uses_tmdb_episode_ids_and_skips_cinemeta(self):
+        details = {"name": "中文剧", "seasons": [{"season_number": 1}]}
+        season = {"episodes": [{"episode_number": 1, "name": "第一集", "overview": "简介"}]}
+        cinemeta = AsyncMock()
+
+        with (
+            patch.object(app, "cache", app.SimpleTTLCache()),
+            patch.object(app, "cinemeta_meta", new=cinemeta),
+            patch.object(
+                app,
+                "get_chinese_bundle",
+                new=AsyncMock(return_value=(details, "CN", {}, ["zh-CN"])),
+            ),
+            patch.object(app, "get_season_details", new=AsyncMock(return_value=season)),
+        ):
+            response = await app.metadata_proxy("series", "tch:series:777")
+
+        meta = response["meta"]
+        cinemeta.assert_not_awaited()
+        self.assertEqual(meta["id"], "tch:series:777")
+        self.assertEqual(meta["name"], "中文剧")
+        self.assertEqual([v["id"] for v in meta["videos"]], ["tmdb:777:1:1"])
+
+    async def test_tmdb_only_movie_streams_with_tmdb_id(self):
+        with (
+            patch.object(app, "cache", app.SimpleTTLCache()),
+            patch.object(app, "cinemeta_meta", new=AsyncMock()),
+            patch.object(
+                app,
+                "get_chinese_bundle",
+                new=AsyncMock(return_value=({"title": "中文片"}, "HK", {}, ["zh-HK"])),
+            ),
+        ):
+            response = await app.metadata_proxy("movie", "tch:movie:888")
+
+        self.assertEqual(response["meta"]["behaviorHints"]["defaultVideoId"], "tmdb:888")
+
+
+class SearchTests(unittest.IsolatedAsyncioTestCase):
+    def test_manifest_catalogs_accept_optional_search(self):
+        for catalog in app.MANIFEST["catalogs"]:
+            with self.subTest(catalog=catalog["id"]):
+                search = [e for e in catalog["extra"] if e["name"] == "search"]
+                self.assertEqual(search, [{"name": "search", "isRequired": False}])
+
+    def test_parse_search(self):
+        self.assertEqual(app.parse_search("search=%E4%BB%99%E9%80%86.json"), "仙逆")
+        self.assertEqual(app.parse_search("search=仙逆.json"), "仙逆")
+        self.assertEqual(app.parse_search("search=  a   b &skip=20.json"), "a b")
+        self.assertEqual(app.parse_search("genre=Latest.json"), "")
+        self.assertEqual(app.parse_extra("search=x&skip=20.json"), (20, "Popular"))
+
+    async def test_search_splits_results_into_cn_and_hk_catalogs(self):
+        results = [
+            {"id": 1, "title": "大陆片", "original_language": "zh", "poster_path": "/1.jpg"},
+            {"id": 2, "title": "港片", "original_language": "cn", "poster_path": "/2.jpg"},
+            {"id": 3, "title": "Hollywood", "original_language": "en", "poster_path": "/3.jpg"},
+            {"id": 4, "title": "台湾片", "original_language": "zh", "poster_path": "/4.jpg"},
+        ]
+        countries = {
+            1: {"production_countries": [{"iso_3166_1": "CN"}]},
+            2: {"production_countries": [{"iso_3166_1": "HK"}, {"iso_3166_1": "CN"}]},
+            4: {"production_countries": [{"iso_3166_1": "TW"}]},
+        }
+
+        async def details(_type, tmdb_id, _locale, _credits=False):
+            return countries[tmdb_id]
+
+        tmdb_get = AsyncMock(return_value={"results": results})
+        with (
+            patch.object(app, "cache", app.SimpleTTLCache()),
+            patch.object(app, "tmdb_get", new=tmdb_get),
+            patch.object(app, "get_details", side_effect=details) as get_details,
+            patch.object(app, "imdb_id_for_tmdb", new=AsyncMock(return_value=None)),
+        ):
+            cn = await app.search_catalog("movie", "cn_movies", "片")
+            hk = await app.search_catalog("movie", "hk_movies", "片")
+
+        self.assertEqual([m["name"] for m in cn["metas"]], ["大陆片"])
+        self.assertEqual([m["name"] for m in hk["metas"]], ["港片"])
+        # The English-language result never costs a detail request.
+        self.assertNotIn(3, [call.args[1] for call in get_details.call_args_list])
+        self.assertEqual(tmdb_get.call_args.args[0], "/search/movie")
+        self.assertEqual(tmdb_get.call_args.args[1]["query"], "片")
+
+    def test_catalog_route_dispatches_search(self):
+        search = AsyncMock(return_value={"metas": []})
+        discover = AsyncMock(return_value={"metas": []})
+        with (
+            patch.object(app, "search_catalog", new=search),
+            patch.object(app, "discover_catalog", new=discover),
+            TestClient(app.app) as client,
+        ):
+            client.get("/catalog/series/cn_series/search=%E4%BB%99%E9%80%86.json")
+            client.get("/catalog/series/cn_series/genre=Latest.json")
+
+        search.assert_awaited_once_with("series", "cn_series", "仙逆", 0)
+        discover.assert_awaited_once_with("series", "cn_series", 0, "Latest")
+
+
+class ChineseLogoTests(unittest.IsolatedAsyncioTestCase):
+    def test_pick_chinese_logo_prefers_region_then_png(self):
+        images = {
+            "logos": [
+                {"iso_639_1": "en", "file_path": "/en.png", "vote_average": 9},
+                {"iso_639_1": "zh", "iso_3166_1": "CN", "file_path": "/cn.png", "vote_average": 5},
+                {"iso_639_1": "zh", "iso_3166_1": "HK", "file_path": "/hk.svg", "vote_average": 5},
+                {"iso_639_1": "zh", "iso_3166_1": "HK", "file_path": "/hk.png", "vote_average": 1},
+            ]
+        }
+        self.assertEqual(
+            app.pick_chinese_logo(images, "CN"), "https://image.tmdb.org/t/p/w500/cn.png"
+        )
+        self.assertEqual(
+            app.pick_chinese_logo(images, "HK"), "https://image.tmdb.org/t/p/w500/hk.png"
+        )
+        self.assertEqual(
+            app.pick_chinese_logo({"logos": [{"iso_639_1": "zh", "file_path": "/x.svg"}]}, "CN"),
+            "https://image.tmdb.org/t/p/original/x.svg",
+        )
+        self.assertIsNone(app.pick_chinese_logo({"logos": [images["logos"][0]]}, "CN"))
+        self.assertIsNone(app.pick_chinese_logo(None, "CN"))
+
+    async def meta_with_images(self, images):
+        cinemeta = {
+            "id": "tt1234567",
+            "type": "movie",
+            "name": "English",
+            "logo": "https://images.metahub.space/logo/medium/tt1234567/img",
+        }
+        details = {"title": "中文片名", "images": images}
+        with (
+            patch.object(app, "cache", app.SimpleTTLCache()),
+            patch.object(app, "cinemeta_meta", new=AsyncMock(return_value=cinemeta)),
+            patch.object(
+                app,
+                "get_chinese_bundle",
+                new=AsyncMock(return_value=(details, "CN", {}, ["zh-CN"])),
+            ),
+        ):
+            return (await app.metadata_proxy("movie", "tch:movie:1:tt1234567"))["meta"]
+
+    async def test_chinese_logo_replaces_cinemeta_english_logo(self):
+        meta = await self.meta_with_images(
+            {"logos": [{"iso_639_1": "zh", "iso_3166_1": "CN", "file_path": "/zh.png"}]}
+        )
+        self.assertEqual(meta["logo"], "https://image.tmdb.org/t/p/w500/zh.png")
+
+    async def test_english_logo_removed_when_no_chinese_logo(self):
+        meta = await self.meta_with_images({"logos": []})
+        self.assertNotIn("logo", meta)
+
+    async def test_detail_request_fetches_chinese_images_in_same_call(self):
+        tmdb_get = AsyncMock(return_value={})
+        with (
+            patch.object(app, "cache", app.SimpleTTLCache()),
+            patch.object(app, "tmdb_get", new=tmdb_get),
+        ):
+            await app.get_details("tv", 9, "zh-CN", True)
+
+        params = tmdb_get.call_args.args[1]
+        self.assertEqual(params["append_to_response"], "aggregate_credits,images")
+        self.assertEqual(params["include_image_language"], "zh")
 
 if __name__ == "__main__":
     unittest.main()
