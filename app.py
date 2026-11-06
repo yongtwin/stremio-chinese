@@ -15,8 +15,8 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
-APP_NAME = "Chinese & HK Catalog v1.6.2"
-APP_VERSION = "1.6.2"
+APP_NAME = "Chinese & HK Catalog v1.6.3"
+APP_VERSION = "1.6.3"
 # Plain link only: no widget script, so the pages stay fast and nothing is tracked.
 SUPPORT_URL = "https://ko-fi.com/twin_chan"
 
@@ -196,9 +196,15 @@ def decode_config(segment: str) -> AddonConfig | None:
 
 
 def manifest_catalog(media_type: str, catalog_id: str, cfg: dict[str, Any]) -> dict[str, Any]:
-    # Stremio's Discover draws one dropdown per filter, so genre and sort are separate
+    # Stremio's Discover draws one dropdown per filter, so sort and genre are separate
     # filters and can be combined. Rows that already fix a genre offer only sorting.
-    extra: list[dict[str, Any]] = []
+    #
+    # Order matters on desktop: Stremio Web shows the first three inputs (type, catalog,
+    # then the first filter) as dropdowns and hides the rest behind the filter-icon button.
+    # Sort comes first so it is the visible dropdown; genre sits behind the filter button.
+    extra: list[dict[str, Any]] = [
+        {"name": "sort", "isRequired": False, "options": list(SORT_OPTIONS), "optionsLimit": 1},
+    ]
     if not cfg.get("with_genres"):
         extra.append(
             {
@@ -208,10 +214,7 @@ def manifest_catalog(media_type: str, catalog_id: str, cfg: dict[str, Any]) -> d
                 "optionsLimit": 1,
             }
         )
-    extra += [
-        {"name": "sort", "isRequired": False, "options": list(SORT_OPTIONS), "optionsLimit": 1},
-        {"name": "skip", "isRequired": False},
-    ]
+    extra.append({"name": "skip", "isRequired": False})
     if not cfg.get("with_genres"):
         # Lets Stremio's search bar find titles by their Chinese names.
         extra.append({"name": "search", "isRequired": False})

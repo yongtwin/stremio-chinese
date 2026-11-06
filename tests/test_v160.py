@@ -89,9 +89,8 @@ class GenreTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(extra["sort"]["isRequired"])
                 self.assertEqual(extra["genre"]["optionsLimit"], 1)
                 self.assertFalse(set(extra["genre"]["options"]) & set(app.SORT_OPTIONS))
-                # Genre first, then Sort: the order Discover draws the dropdowns in.
                 names = [e["name"] for e in by_id[catalog_id]["extra"]]
-                self.assertLess(names.index("genre"), names.index("sort"))
+                self.assertLess(names.index("sort"), names.index("genre"))
                 self.assertIn("search", extra)
 
         self.assertIn("恐怖", filters("hk_movies")["genre"]["options"])
@@ -102,6 +101,15 @@ class GenreTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(extra["sort"]["options"], app.SORT_OPTIONS)
                 self.assertNotIn("genre", extra)
                 self.assertNotIn("search", extra)
+
+    def test_sort_is_the_first_dropdown_so_it_is_not_hidden_behind_the_filter_button(self):
+        # Stremio Web shows the first three inputs (type, catalog, first filter) in the row
+        # and hides the rest behind the filter icon: sort must be the first filter with options.
+        for catalog in app.MANIFEST["catalogs"]:
+            with self.subTest(catalog=catalog["id"]):
+                selectable = [e["name"] for e in catalog["extra"] if e.get("options")]
+                self.assertEqual(selectable[0], "sort")
+                self.assertLessEqual(len(selectable), 2)
 
     async def run_discover(self, media_type, catalog_id, sort="Popular", genre=None):
         tmdb_get = AsyncMock(return_value={"results": []})

@@ -1,6 +1,6 @@
 # Chinese & HK Catalog for Stremio
 
-[![Version](https://img.shields.io/badge/version-1.6.2-5b45ff)](#changelog)
+[![Version](https://img.shields.io/badge/version-1.6.3-5b45ff)](#changelog)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-support-13c3ff?logo=ko-fi&logoColor=white)](https://ko-fi.com/twin_chan)
 
@@ -105,9 +105,13 @@ server's key.
 Each country row has two separate dropdowns in Stremio's Discover page, which keep their choices
 independently so you can combine them:
 
-- **Genre:** 悬疑, 喜剧, 科幻, … (the list differs for movies and series). Leave it empty for all genres.
 - **Sort:** Popular (default), Latest or Top Rated. Top Rated only counts titles with at least 50 votes,
   so a narrow combination (e.g. 香港电影 → 恐怖 → Top Rated) can return few titles.
+- **Genre:** 悬疑, 喜剧, 科幻, … (the list differs for movies and series). Leave it empty for all genres.
+
+On desktop, Stremio Web shows the first three dropdowns (type, catalog, then the first filter) in the
+row and keeps further filters behind the filter-icon button, so **Sort is the dropdown in the row and
+Genre is under the filter button**. Mobile puts both in the Filters sheet.
 
 国产动画 and 综艺节目 are subsets of 中国电视剧, so they offer the Sort dropdown only (no genre, no
 search).
@@ -220,6 +224,13 @@ CORS-without-Origin case. To run the addon locally, set a TMDB key and start it 
 `uvicorn app:app --port 8000`.
 
 ## Changelog
+
+### 1.6.3
+
+- **Sort and Genre swapped.** Stremio Web only shows the first three dropdowns (type, catalog, first
+  filter) in the row and hides the rest behind the filter-icon button. Genre came first in 1.6.2, which
+  pushed Sort behind the icon. Sort now comes first, so it is a visible dropdown and Genre is under the
+  filter button. No request format changed.
 
 ### 1.6.2
 
