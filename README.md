@@ -3,7 +3,7 @@
 ## Support
 
 This addon is free and has no ads. If it's useful to you, you can help cover the server and
-development costs: [☕ ko-fi.com/yongtwinchin](https://ko-fi.com/twin_chan).
+development costs: [☕ ko-fi.com/twin_chan](https://ko-fi.com/twin_chan).
 
 v1.6.1 adds that link to the home page, the `/configure` page and the manifest description
 (which Stremio shows in its install dialog). It is a plain link: no widget, no third-party
