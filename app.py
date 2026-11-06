@@ -15,8 +15,8 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
-APP_NAME = "Chinese & HK Catalog v1.6.1"
-APP_VERSION = "1.6.1"
+APP_NAME = "Chinese & HK Catalog v1.6.2"
+APP_VERSION = "1.6.2"
 # Plain link only: no widget script, so the pages stay fast and nothing is tracked.
 SUPPORT_URL = "https://ko-fi.com/yongtwinchin"
 
@@ -196,12 +196,20 @@ def decode_config(segment: str) -> AddonConfig | None:
 
 
 def manifest_catalog(media_type: str, catalog_id: str, cfg: dict[str, Any]) -> dict[str, Any]:
-    options = list(SORT_OPTIONS)
+    # Stremio's Discover draws one dropdown per filter, so genre and sort are separate
+    # filters and can be combined. Rows that already fix a genre offer only sorting.
+    extra: list[dict[str, Any]] = []
     if not cfg.get("with_genres"):
-        options += list(genre_map(cfg["tmdb_type"]))
-
-    extra: list[dict[str, Any]] = [
-        {"name": "genre", "isRequired": False, "options": options, "optionsLimit": 1},
+        extra.append(
+            {
+                "name": "genre",
+                "isRequired": False,
+                "options": list(genre_map(cfg["tmdb_type"])),
+                "optionsLimit": 1,
+            }
+        )
+    extra += [
+        {"name": "sort", "isRequired": False, "options": list(SORT_OPTIONS), "optionsLimit": 1},
         {"name": "skip", "isRequired": False},
     ]
     if not cfg.get("with_genres"):
@@ -454,7 +462,8 @@ def parse_extra_args(extra_args: str | None) -> dict[str, str]:
     return values
 
 
-def parse_extra(extra_args: str | None) -> tuple[int, str]:
+def parse_extra(extra_args: str | None) -> tuple[int, str, str | None]:
+    """Returns (skip, sort, genre); genre is None for "all genres"."""
     values = parse_extra_args(extra_args)
 
     try:
@@ -462,12 +471,22 @@ def parse_extra(extra_args: str | None) -> tuple[int, str]:
     except ValueError:
         skip = 0
 
-    # The single dropdown holds either a sort order or a genre label.
-    selection = values.get("genre", "Popular")
-    if selection not in SORT_OPTIONS and selection not in ALL_GENRE_LABELS:
-        selection = "Popular"
+    sort = values.get("sort")
+    genre: str | None = values.get("genre")
 
-    return skip, selection
+    # Before 1.6.2 one `genre` dropdown held the sort orders too. Clients still on the
+    # old manifest (or old deep links) send e.g. `genre=Latest`: treat it as the sort.
+    if genre in SORT_OPTIONS:
+        if sort not in SORT_OPTIONS:
+            sort = genre
+        genre = None
+
+    if sort not in SORT_OPTIONS:
+        sort = "Popular"
+    if genre not in ALL_GENRE_LABELS:
+        genre = None
+
+    return skip, sort, genre
 
 
 def parse_search(extra_args: str | None) -> str:
@@ -637,40 +656,44 @@ def catalog_language(cfg: dict[str, Any], config: AddonConfig | None = None) -> 
     return cfg["language"]
 
 
-def discover_genres(cfg: dict[str, Any], selection: str) -> str | None:
+def effective_genre(cfg: dict[str, Any], genre: str | None) -> str | None:
+    """The chosen genre label if it applies to this row, otherwise None."""
+    if not genre or genre not in genre_map(cfg["tmdb_type"]):
+        return None
+    # TMDB cannot mix AND with an OR list; rows with one offer no genre dropdown.
+    if "|" in (cfg.get("with_genres") or ""):
+        return None
+    return genre
+
+
+def discover_genres(cfg: dict[str, Any], genre: str | None) -> str | None:
     """TMDB `with_genres` for a row plus an optional genre chosen in the dropdown."""
     row_genres = cfg.get("with_genres") or ""
-    chosen = genre_map(cfg["tmdb_type"]).get(selection)
-    if not chosen:
+    label = effective_genre(cfg, genre)
+    if not label:
         return row_genres or None
-    if not row_genres:
-        return chosen
-    if "|" in row_genres:
-        # TMDB cannot mix AND with an OR list; those rows offer no genre dropdown.
-        return row_genres
-    return f"{row_genres},{chosen}"  # comma = AND
+    chosen = genre_map(cfg["tmdb_type"])[label]
+    return f"{row_genres},{chosen}" if row_genres else chosen  # comma = AND
 
 
 async def discover_catalog(
     media_type: str,
     catalog_id: str,
     skip: int,
-    sort_mode: str = "Popular",
+    sort: str = "Popular",
+    genre: str | None = None,
 ) -> dict[str, Any]:
     cfg = CATALOGS.get((media_type, catalog_id))
 
     if not cfg:
         return {"metas": []}
 
-    # `sort_mode` is the dropdown value: a sort order, or a genre label (listed by popularity).
-    selection = (
-        sort_mode
-        if sort_mode in SORT_OPTIONS or sort_mode in genre_map(cfg["tmdb_type"])
-        else "Popular"
-    )
+    if sort not in SORT_OPTIONS:
+        sort = "Popular"
+    genre = effective_genre(cfg, genre)
     language = catalog_language(cfg)
 
-    cache_key = f"catalog:{media_type}:{catalog_id}:{selection}:{skip}:{language}:v3"
+    cache_key = f"catalog:{media_type}:{catalog_id}:{sort}:{genre or '-'}:{skip}:{language}:v4"
     cached = await cache_get(cache_key)
     if cached is not None:
         return cached
@@ -684,12 +707,10 @@ async def discover_catalog(
         "include_adult": "false",
         "page": page,
     }
-    with_genres = discover_genres(cfg, selection)
+    with_genres = discover_genres(cfg, genre)
     if with_genres:
         params["with_genres"] = with_genres
-    params.update(
-        discover_sort_params(tmdb_type, selection if selection in SORT_OPTIONS else "Popular")
-    )
+    params.update(discover_sort_params(tmdb_type, sort))
 
     data = await tmdb_get(f"/discover/{tmdb_type}", params)
     metas = await catalog_metas(media_type, tmdb_type, data.get("results") or [])
@@ -1983,17 +2004,13 @@ async def catalog_with_extra(
     extra_args: str,
 ):
     try:
-        skip, selection = parse_extra(extra_args)
+        skip, sort, genre = parse_extra(extra_args)
         query = parse_search(extra_args)
         if query:
+            # Search ignores the sort and genre filters.
             payload = await search_catalog(media_type, catalog_id, query, skip)
         else:
-            payload = await discover_catalog(
-                media_type,
-                catalog_id,
-                skip,
-                selection,
-            )
+            payload = await discover_catalog(media_type, catalog_id, skip, sort, genre)
         return JSONResponse(payload, headers=CATALOG_HEADERS)
     except httpx.HTTPStatusError as exc:
         raise HTTPException(

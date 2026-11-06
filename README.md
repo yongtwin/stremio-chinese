@@ -1,6 +1,6 @@
 # Chinese & HK Catalog for Stremio
 
-[![Version](https://img.shields.io/badge/version-1.6.1-5b45ff)](#changelog)
+[![Version](https://img.shields.io/badge/version-1.6.2-5b45ff)](#changelog)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-support-13c3ff?logo=ko-fi&logoColor=white)](https://ko-fi.com/yongtwinchin)
 
@@ -40,7 +40,7 @@ Thank you for supporting independent open-source development!
 
 - **Eight catalog rows:** 🇨🇳 中国电影 · 🇭🇰 香港电影 · 🇹🇼 台湾电影 · 🇨🇳 中国电视剧 · 🇭🇰 香港电视剧 ·
   🇹🇼 台湾电视剧 · 🇨🇳 国产动画 · 🇨🇳 综艺节目
-- **Sorting and genres:** Popular, Latest, Top Rated, plus a genre list (悬疑, 喜剧, 科幻, …)
+- **Genre and Sort dropdowns** that combine: e.g. 香港电影 → 喜剧 → Latest
 - **Search by Chinese title:** type 仙逆 or 無間道 in Stremio's search bar
 - **Chinese detail pages:** title, overview, genres, cast, directors and writers (native names
   where TMDB has them), poster, title logo, trailers and per-episode titles
@@ -102,10 +102,15 @@ server's key.
 | 🇨🇳 国产动画 | CN series, genre Animation |
 | 🇨🇳 综艺节目 | CN series, genre Reality or Talk |
 
-The dropdown on each country row lists **Popular / Latest / Top Rated** followed by genres. A genre
-lists that genre by popularity; Stremio's dropdown holds a single value, so a genre and a sort order
-cannot be combined. 国产动画 and 综艺节目 are subsets of 中国电视剧, so they offer sorting only (no
-genres, no search).
+Each country row has two separate dropdowns in Stremio's Discover page, which keep their choices
+independently so you can combine them:
+
+- **Genre:** 悬疑, 喜剧, 科幻, … (the list differs for movies and series). Leave it empty for all genres.
+- **Sort:** Popular (default), Latest or Top Rated. Top Rated only counts titles with at least 50 votes,
+  so a narrow combination (e.g. 香港电影 → 恐怖 → Top Rated) can return few titles.
+
+国产动画 and 综艺节目 are subsets of 中国电视剧, so they offer the Sort dropdown only (no genre, no
+search).
 
 A title that lists several of these countries lands in one row: HK first, then CN, then TW. Titles
 from other countries are not shown here, and the rest of Stremio keeps Cinemeta's English metadata.
@@ -215,6 +220,14 @@ CORS-without-Origin case. To run the addon locally, set a TMDB key and start it 
 `uvicorn app:app --port 8000`.
 
 ## Changelog
+
+### 1.6.2
+
+- **Separate Genre and Sort dropdowns.** Before, one dropdown held both the sort orders and the genres,
+  so you could pick only one and a genre was always listed by popularity. Genre and Sort are now two
+  filters that combine, e.g. 香港电影 → 喜剧 → Latest.
+- Old links and clients still on the previous manifest (`genre=Latest`) keep working: a sort name sent
+  as the genre is read as the sort.
 
 ### 1.6.1
 

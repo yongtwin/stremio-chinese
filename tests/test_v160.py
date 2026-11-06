@@ -56,68 +56,122 @@ class TaiwanTests(unittest.IsolatedAsyncioTestCase):
 
 
 class GenreTests(unittest.IsolatedAsyncioTestCase):
-    def test_parse_extra_accepts_sort_options_and_genre_labels(self):
-        self.assertEqual(app.parse_extra("genre=%E6%82%AC%E7%96%91.json"), (0, "悬疑"))
-        self.assertEqual(app.parse_extra("genre=Latest&skip=20.json"), (20, "Latest"))
-        self.assertEqual(app.parse_extra("genre=Nonsense.json"), (0, "Popular"))
+    def test_parse_extra_returns_skip_sort_and_genre(self):
+        parse = app.parse_extra
+        self.assertEqual(parse("genre=%E6%82%AC%E7%96%91.json"), (0, "Popular", "悬疑"))
+        self.assertEqual(parse("sort=Latest&skip=20.json"), (20, "Latest", None))
+        self.assertEqual(
+            parse("genre=%E5%96%9C%E5%89%A7&sort=Latest.json"), (0, "Latest", "喜剧")
+        )
+        self.assertEqual(parse("genre=Nonsense&sort=Nonsense.json"), (0, "Popular", None))
 
-    def test_genre_dropdown_lists_sorts_then_genres_only_on_country_rows(self):
+    def test_old_style_genre_holding_a_sort_name_is_treated_as_the_sort(self):
+        # Clients on the pre-1.6.2 manifest, or old deep links, send e.g. genre=Latest.
+        parse = app.parse_extra
+        for name in app.SORT_OPTIONS:
+            with self.subTest(name=name):
+                self.assertEqual(parse(f"genre={name.replace(' ', '%20')}.json"), (0, name, None))
+        self.assertEqual(parse("genre=Latest&skip=20.json"), (20, "Latest", None))
+        # An explicit sort wins over a stale genre value.
+        self.assertEqual(parse("genre=Latest&sort=Top%20Rated.json"), (0, "Top Rated", None))
+
+    def test_manifest_has_separate_genre_and_sort_filters(self):
         by_id = {c["id"]: c for c in app.MANIFEST["catalogs"]}
 
-        def options(catalog_id):
-            return next(e for e in by_id[catalog_id]["extra"] if e["name"] == "genre")["options"]
+        def filters(catalog_id):
+            return {e["name"]: e for e in by_id[catalog_id]["extra"]}
 
-        self.assertEqual(options("cn_series")[:3], app.SORT_OPTIONS)
-        self.assertIn("悬疑", options("cn_series"))
-        self.assertIn("恐怖", options("hk_movies"))
-        self.assertNotIn("恐怖", options("cn_series"))
-        self.assertEqual(options("cn_donghua"), app.SORT_OPTIONS)
+        for catalog_id in ("cn_movies", "hk_movies", "tw_series", "cn_series"):
+            with self.subTest(catalog=catalog_id):
+                extra = filters(catalog_id)
+                self.assertEqual(extra["sort"]["options"], app.SORT_OPTIONS)
+                self.assertEqual(extra["sort"]["optionsLimit"], 1)
+                self.assertFalse(extra["sort"]["isRequired"])
+                self.assertEqual(extra["genre"]["optionsLimit"], 1)
+                self.assertFalse(set(extra["genre"]["options"]) & set(app.SORT_OPTIONS))
+                # Genre first, then Sort: the order Discover draws the dropdowns in.
+                names = [e["name"] for e in by_id[catalog_id]["extra"]]
+                self.assertLess(names.index("genre"), names.index("sort"))
+                self.assertIn("search", extra)
 
-    async def run_discover(self, media_type, catalog_id, selection):
+        self.assertIn("恐怖", filters("hk_movies")["genre"]["options"])
+        self.assertNotIn("恐怖", filters("cn_series")["genre"]["options"])
+        for catalog_id in ("cn_donghua", "cn_variety"):
+            with self.subTest(catalog=catalog_id):
+                extra = filters(catalog_id)
+                self.assertEqual(extra["sort"]["options"], app.SORT_OPTIONS)
+                self.assertNotIn("genre", extra)
+                self.assertNotIn("search", extra)
+
+    async def run_discover(self, media_type, catalog_id, sort="Popular", genre=None):
         tmdb_get = AsyncMock(return_value={"results": []})
         with (
             patch.object(app, "cache", app.SimpleTTLCache()),
             patch.object(app, "tmdb_get", new=tmdb_get),
         ):
-            await app.discover_catalog(media_type, catalog_id, 0, selection)
+            await app.discover_catalog(media_type, catalog_id, 0, sort, genre)
         return tmdb_get.call_args.args[1]
 
-    async def test_genre_label_becomes_with_genres_sorted_by_popularity(self):
-        params = await self.run_discover("series", "cn_series", "悬疑")
-        self.assertEqual(params["with_genres"], "9648")
-        self.assertEqual(params["sort_by"], "popularity.desc")
-        self.assertEqual(params["with_origin_country"], "CN")
+    async def test_genre_and_sort_are_applied_together(self):
+        movie = await self.run_discover("movie", "hk_movies", "Latest", "喜剧")
+        self.assertEqual(movie["with_genres"], "35")
+        self.assertEqual(movie["sort_by"], "primary_release_date.desc")
+        self.assertIn("primary_release_date.lte", movie)
+        self.assertEqual(movie["with_origin_country"], "HK")
+
+        series = await self.run_discover("series", "cn_series", "Latest", "悬疑")
+        self.assertEqual(series["with_genres"], "9648")
+        self.assertEqual(series["sort_by"], "first_air_date.desc")
+        self.assertIn("first_air_date.lte", series)
+
+    async def test_genre_no_longer_forces_popularity(self):
+        popular = await self.run_discover("series", "cn_series", "Popular", "悬疑")
+        self.assertEqual(popular["sort_by"], "popularity.desc")
+        top = await self.run_discover("series", "cn_series", "Top Rated", "悬疑")
+        self.assertEqual(top["sort_by"], "vote_average.desc")
+        self.assertEqual(top["vote_count.gte"], "50")
 
     async def test_genre_is_anded_with_the_rows_own_genres(self):
-        params = await self.run_discover("series", "cn_donghua", "剧情")
+        params = await self.run_discover("series", "cn_donghua", "Top Rated", "剧情")
         self.assertEqual(params["with_genres"], "16,18")
+        self.assertEqual(params["sort_by"], "vote_average.desc")
 
-    async def test_row_genres_apply_without_a_selection(self):
-        donghua = await self.run_discover("series", "cn_donghua", "Popular")
+    async def test_row_genres_apply_without_a_genre(self):
+        donghua = await self.run_discover("series", "cn_donghua", "Top Rated")
         variety = await self.run_discover("series", "cn_variety", "Latest")
-        movies = await self.run_discover("movie", "cn_movies", "Popular")
+        movies = await self.run_discover("movie", "cn_movies")
         self.assertEqual(donghua["with_genres"], "16")
+        self.assertEqual(donghua["sort_by"], "vote_average.desc")
         self.assertEqual(variety["with_genres"], "10764|10767")
         self.assertEqual(variety["sort_by"], "first_air_date.desc")
         self.assertNotIn("with_genres", movies)
 
+    async def test_variety_ignores_a_genre_it_cannot_and_with(self):
+        params = await self.run_discover("series", "cn_variety", "Popular", "剧情")
+        self.assertEqual(params["with_genres"], "10764|10767")
+
     async def test_label_from_the_other_media_type_is_ignored(self):
         # 动作冒险 is a TV genre; the movie list has 动作.
-        params = await self.run_discover("movie", "cn_movies", "动作冒险")
+        params = await self.run_discover("movie", "cn_movies", "Popular", "动作冒险")
         self.assertNotIn("with_genres", params)
-        params = await self.run_discover("movie", "cn_movies", "动作")
+        params = await self.run_discover("movie", "cn_movies", "Popular", "动作")
         self.assertEqual(params["with_genres"], "28")
 
-    async def test_cache_key_includes_the_selection(self):
+    async def test_cache_key_includes_both_sort_and_genre(self):
         tmdb_get = AsyncMock(return_value={"results": []})
         with (
             patch.object(app, "cache", app.SimpleTTLCache()),
             patch.object(app, "tmdb_get", new=tmdb_get),
         ):
-            await app.discover_catalog("series", "cn_series", 0, "悬疑")
-            await app.discover_catalog("series", "cn_series", 0, "喜剧")
-            await app.discover_catalog("series", "cn_series", 0, "悬疑")
-        self.assertEqual(tmdb_get.await_count, 2)
+            await app.discover_catalog("movie", "hk_movies", 0, "Latest", "喜剧")
+            await app.discover_catalog("movie", "hk_movies", 0, "Popular", "喜剧")
+            await app.discover_catalog("movie", "hk_movies", 0, "Latest", "恐怖")
+            await app.discover_catalog("movie", "hk_movies", 0, "Latest", None)
+            self.assertEqual(tmdb_get.await_count, 4)
+            await app.discover_catalog("movie", "hk_movies", 0, "Latest", "喜剧")  # hit
+            # An unusable genre collapses to "no genre" and shares that cache entry.
+            await app.discover_catalog("movie", "hk_movies", 0, "Latest", "动作冒险")
+            self.assertEqual(tmdb_get.await_count, 4)
 
 
 class ConfigTests(unittest.TestCase):
@@ -266,7 +320,7 @@ class ConfiguredRouteTests(unittest.TestCase):
             for path in (
                 "/AAAAAAAA/manifest.json",
                 "/AAAAAAAA/catalog/movie/cn_movies.json",
-                "/AAAAAAAA/catalog/movie/cn_movies/genre=Latest.json",
+                "/AAAAAAAA/catalog/movie/cn_movies/sort=Latest.json",
                 "/AAAAAAAA/meta/movie/tch%3Amovie%3A1.json",
                 "/AAAAAAAA/configure",
             ):
@@ -276,7 +330,7 @@ class ConfiguredRouteTests(unittest.TestCase):
     def test_configured_catalog_routes_apply_config_and_skip_disabled_rows(self):
         seen = {}
 
-        async def discover(media_type, catalog_id, skip, selection):
+        async def discover(media_type, catalog_id, skip, sort="Popular", genre=None):
             seen["script"] = app.current_config.get().script
             seen["key"] = app.current_config.get().tmdb_key
             return {"metas": [{"id": catalog_id}]}
@@ -288,7 +342,7 @@ class ConfiguredRouteTests(unittest.TestCase):
         ):
             both = [
                 client.get(f"/{segment}/catalog/movie/cn_movies.json"),
-                client.get(f"/{segment}/catalog/movie/cn_movies/genre=Latest.json"),
+                client.get(f"/{segment}/catalog/movie/cn_movies/sort=Latest.json"),
             ]
             disabled = client.get(f"/{segment}/catalog/movie/hk_movies.json")
 
