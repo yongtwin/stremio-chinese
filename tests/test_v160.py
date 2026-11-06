@@ -707,7 +707,7 @@ class SharedCacheTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SupportLinkTests(unittest.TestCase):
-    URL = "https://ko-fi.com/yongtwinchin"
+    URL = "https://ko-fi.com/twin_chan"
 
     def test_home_page_links_to_kofi_in_a_new_tab(self):
         with TestClient(app.app) as client:
@@ -736,9 +736,9 @@ class SupportLinkTests(unittest.TestCase):
                 client.get(f"/{segment}/manifest.json").json(),
             ]
         for manifest in manifests:
-            self.assertIn("ko-fi.com/yongtwinchin", manifest["description"])
+            self.assertIn("ko-fi.com/twin_chan", manifest["description"])
             self.assertEqual(manifest["id"], "com.twin.chinese-hk-catalog.v141")
-        self.assertIn("ko-fi.com/yongtwinchin", app.MANIFEST["description"])
+        self.assertIn("ko-fi.com/twin_chan", app.MANIFEST["description"])
 
     def test_health_reports_support_url(self):
         with TestClient(app.app) as client:

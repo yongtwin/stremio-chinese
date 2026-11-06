@@ -2,7 +2,7 @@
 
 [![Version](https://img.shields.io/badge/version-1.6.2-5b45ff)](#changelog)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-support-13c3ff?logo=ko-fi&logoColor=white)](https://ko-fi.com/yongtwinchin)
+[![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-support-13c3ff?logo=ko-fi&logoColor=white)](https://ko-fi.com/twin_chan)
 
 A [Stremio](https://www.stremio.com/) addon that adds China, Hong Kong and Taiwan movie and TV
 catalogs with **Chinese metadata**: titles, descriptions, cast, genres, posters, logos, trailers
@@ -19,7 +19,7 @@ This addon is developed and maintained independently.
 
 If you find it useful, consider buying me a coffee! Your support helps cover hosting costs, maintenance, and future improvements.
 
-☕ **[Support me on Ko-fi](https://ko-fi.com/yongtwinchin)**
+☕ **[Support me on Ko-fi](https://ko-fi.com/twin_chan)**
 
 Thank you for supporting independent open-source development!
 

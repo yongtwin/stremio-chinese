@@ -18,7 +18,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 APP_NAME = "Chinese & HK Catalog v1.6.2"
 APP_VERSION = "1.6.2"
 # Plain link only: no widget script, so the pages stay fast and nothing is tracked.
-SUPPORT_URL = "https://ko-fi.com/yongtwinchin"
+SUPPORT_URL = "https://ko-fi.com/twin_chan"
 
 # httpx logs full request URLs at INFO, which would include a v3 `api_key` parameter.
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -229,7 +229,7 @@ def build_manifest(config: AddonConfig = DEFAULT_CONFIG) -> dict[str, Any]:
             "China/Hong Kong/Taiwan movie and TV catalogs with Chinese metadata, "
             "search, localized credits, logos, trailers and episode titles. "
             "Other IMDb titles remain in Cinemeta English. "
-            "Support: ko-fi.com/yongtwinchin"
+            "Support: ko-fi.com/twin_chan"
         ),
         "resources": [
             "catalog",
