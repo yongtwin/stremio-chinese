@@ -16,12 +16,12 @@ class SeriesEpisodeMetadataTests(unittest.IsolatedAsyncioTestCase):
         catalog_ids = {catalog["id"] for catalog in manifest["catalogs"]}
         # Same ID as the deployed addon so existing installs update in place.
         self.assertEqual(manifest["id"], "com.twin.chinese-hk-catalog.v141")
-        self.assertEqual(manifest["version"], "1.4.2")
+        self.assertEqual(manifest["version"], "1.4.3")
         self.assertEqual(len(manifest["catalogs"]), 4)
         self.assertEqual(catalog_ids, {"cn_movies", "hk_movies", "cn_series", "hk_series"})
         self.assertIn('href="stremio://testserver/manifest.json"', install_response.text)
         self.assertIn("http://testserver/manifest.json", install_response.text)
-        self.assertEqual(health_response.json()["version"], "1.4.2")
+        self.assertEqual(health_response.json()["version"], "1.4.3")
 
     async def test_hong_kong_metadata_uses_traditional_chinese_fallback_when_present(self):
         english = {

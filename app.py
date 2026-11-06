@@ -10,8 +10,8 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
-APP_NAME = "Chinese & HK Catalog v1.4.2"
-APP_VERSION = "1.4.2"
+APP_NAME = "Chinese & HK Catalog v1.4.3"
+APP_VERSION = "1.4.3"
 
 TMDB_API_TOKEN = os.getenv("TMDB_API_TOKEN", "").strip()
 TMDB_API_KEY = os.getenv("TMDB_API_KEY", "").strip()

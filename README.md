@@ -1,4 +1,4 @@
-# Chinese & HK Catalog for Stremio — v1.4.2
+# Chinese & HK Catalog for Stremio — v1.4.3
 
 ## v1.4.2: fix "No metadata was found!" on detail pages
 
@@ -138,10 +138,10 @@ are still installed, you will see duplicate 中国电影 / 香港电影 rows.
 Uninstall every older "Chinese & HK Catalog" entry and keep only:
 
 ```text
-Chinese & HK Catalog v1.4.2
+Chinese & HK Catalog v1.4.3
 ```
 
-Upgrading from v1.4.1 needs no reinstall: the addon ID is the same and Stremio
+Upgrading from v1.4.1 or v1.4.2 needs no reinstall: the addon ID is the same and Stremio
 refreshes the manifest from the same URL. If an old copy with ID
 `com.twin.chinese-hk-catalog.v140` is installed, uninstall it.
 
@@ -160,7 +160,7 @@ https://YOUR-PROJECT.vercel.app/health
 should show:
 
 ```json
-"version": "1.4.2"
+"version": "1.4.3"
 ```
 
 Then verify:
@@ -173,7 +173,7 @@ shows:
 
 ```json
 "id": "com.twin.chinese-hk-catalog.v141",
-"version": "1.4.2"
+"version": "1.4.3"
 ```
 
 Deploying purges Vercel's CDN cache, which also clears any CORS-less copies cached
