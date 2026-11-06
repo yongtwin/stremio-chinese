@@ -15,8 +15,8 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
-APP_NAME = "Chinese & HK Catalog v1.6.3"
-APP_VERSION = "1.6.3"
+APP_NAME = "Chinese & HK Catalog v1.6.4"
+APP_VERSION = "1.6.4"
 # Plain link only: no widget script, so the pages stay fast and nothing is tracked.
 SUPPORT_URL = "https://ko-fi.com/twin_chan"
 
@@ -195,25 +195,43 @@ def decode_config(segment: str) -> AddonConfig | None:
     return AddonConfig(script=script, catalogs=selected, tmdb_key=tmdb_key)
 
 
+COMBO_SEP = " · "  # "喜剧 · Latest": a genre plus a sort order in one genre-dropdown entry
+
+
+def genre_options(cfg: dict[str, Any]) -> list[str]:
+    """
+    Entries of the `genre` dropdown: the sort orders (as before 1.6.2), then each genre
+    followed by its Latest / Top Rated variants. Rows that fix their own genre list the
+    sort orders only. This lets mobile apps, which only show `genre`, filter and sort.
+    """
+    options = list(SORT_OPTIONS)
+    if not cfg.get("with_genres"):
+        ranked = [name for name in SORT_OPTIONS if name != "Popular"]
+        for label in genre_map(cfg["tmdb_type"]):
+            options.append(label)
+            options.extend(f"{label}{COMBO_SEP}{name}" for name in ranked)
+    return options
+
+
 def manifest_catalog(media_type: str, catalog_id: str, cfg: dict[str, Any]) -> dict[str, Any]:
-    # Stremio's Discover draws one dropdown per filter, so sort and genre are separate
-    # filters and can be combined. Rows that already fix a genre offer only sorting.
+    # Stremio Web draws one dropdown per filter, so sort and genre are separate filters
+    # there and can be combined.
     #
     # Order matters on desktop: Stremio Web shows the first three inputs (type, catalog,
     # then the first filter) as dropdowns and hides the rest behind the filter-icon button.
     # Sort comes first so it is the visible dropdown; genre sits behind the filter button.
+    #
+    # The mobile apps only draw a filter named `genre` and ignore any other, so the genre
+    # list also carries the sort orders and "genre · sort" combinations (see genre_options).
     extra: list[dict[str, Any]] = [
         {"name": "sort", "isRequired": False, "options": list(SORT_OPTIONS), "optionsLimit": 1},
+        {
+            "name": "genre",
+            "isRequired": False,
+            "options": genre_options(cfg),
+            "optionsLimit": 1,
+        },
     ]
-    if not cfg.get("with_genres"):
-        extra.append(
-            {
-                "name": "genre",
-                "isRequired": False,
-                "options": list(genre_map(cfg["tmdb_type"])),
-                "optionsLimit": 1,
-            }
-        )
     extra.append({"name": "skip", "isRequired": False})
     if not cfg.get("with_genres"):
         # Lets Stremio's search bar find titles by their Chinese names.
@@ -474,22 +492,35 @@ def parse_extra(extra_args: str | None) -> tuple[int, str, str | None]:
     except ValueError:
         skip = 0
 
+    genre, genre_sort = parse_genre_value(values.get("genre"))
+
+    # An explicit `sort` (Stremio Web's Sort dropdown) wins; otherwise use the sort carried
+    # by the genre entry ("Latest", or "喜剧 · Latest"), otherwise Popular.
     sort = values.get("sort")
-    genre: str | None = values.get("genre")
-
-    # Before 1.6.2 one `genre` dropdown held the sort orders too. Clients still on the
-    # old manifest (or old deep links) send e.g. `genre=Latest`: treat it as the sort.
-    if genre in SORT_OPTIONS:
-        if sort not in SORT_OPTIONS:
-            sort = genre
-        genre = None
-
     if sort not in SORT_OPTIONS:
-        sort = "Popular"
-    if genre not in ALL_GENRE_LABELS:
-        genre = None
+        sort = genre_sort or "Popular"
 
     return skip, sort, genre
+
+
+def parse_genre_value(value: str | None) -> tuple[str | None, str | None]:
+    """
+    Split a `genre` value into (genre label, sort order); either part may be None.
+      "悬疑"            -> ("悬疑", None)
+      "Latest"          -> (None, "Latest")      (the old single-dropdown form, pre-1.6.2)
+      "悬疑 · Latest"   -> ("悬疑", "Latest")     (mobile apps only have this dropdown)
+    Anything unrecognised means no genre and no sort.
+    """
+    if not value:
+        return None, None
+    if value in SORT_OPTIONS:
+        return None, value
+    label, separator, sort_name = value.partition(COMBO_SEP)
+    if separator:
+        if label in ALL_GENRE_LABELS and sort_name in SORT_OPTIONS:
+            return label, sort_name
+        return None, None
+    return (value, None) if value in ALL_GENRE_LABELS else (None, None)
 
 
 def parse_search(extra_args: str | None) -> str:

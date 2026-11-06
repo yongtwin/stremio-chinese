@@ -1,6 +1,6 @@
 # Chinese & HK Catalog for Stremio
 
-[![Version](https://img.shields.io/badge/version-1.6.3-5b45ff)](#changelog)
+[![Version](https://img.shields.io/badge/version-1.6.4-5b45ff)](#changelog)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-support-13c3ff?logo=ko-fi&logoColor=white)](https://ko-fi.com/twin_chan)
 
@@ -40,7 +40,7 @@ Thank you for supporting independent open-source development!
 
 - **Eight catalog rows:** 🇨🇳 中国电影 · 🇭🇰 香港电影 · 🇹🇼 台湾电影 · 🇨🇳 中国电视剧 · 🇭🇰 香港电视剧 ·
   🇹🇼 台湾电视剧 · 🇨🇳 国产动画 · 🇨🇳 综艺节目
-- **Genre and Sort dropdowns** that combine: e.g. 香港电影 → 喜剧 → Latest
+- **Genre and Sort** that combine: e.g. 香港电影 → 喜剧 → Latest (two dropdowns on Stremio Web, "喜剧 · Latest" entries on mobile)
 - **Search by Chinese title:** type 仙逆 or 無間道 in Stremio's search bar
 - **Chinese detail pages:** title, overview, genres, cast, directors and writers (native names
   where TMDB has them), poster, title logo, trailers and per-episode titles
@@ -111,7 +111,18 @@ independently so you can combine them:
 
 On desktop, Stremio Web shows the first three dropdowns (type, catalog, then the first filter) in the
 row and keeps further filters behind the filter-icon button, so **Sort is the dropdown in the row and
-Genre is under the filter button**. Mobile puts both in the Filters sheet.
+Genre is under the filter button**. Narrow browser windows put the filters in a Filters sheet.
+
+**Stremio mobile apps** only draw a filter named `genre` and ignore any other, so the Genre list also
+holds the sort orders and "genre · sort" entries:
+
+```text
+Popular · Latest · Top Rated · 剧情 · 剧情 · Latest · 剧情 · Top Rated · 喜剧 · 喜剧 · Latest · …
+```
+
+Pick `喜剧 · Latest` for comedies newest first, or `Latest` alone for all genres. On Stremio Web the
+same entries appear in the Genre list too, which is redundant next to the Sort dropdown; when Sort is
+set it wins over the sort inside a Genre entry. 国产动画 and 综艺节目 list the three sort orders only.
 
 国产动画 and 综艺节目 are subsets of 中国电视剧, so they offer the Sort dropdown only (no genre, no
 search).
@@ -224,6 +235,14 @@ CORS-without-Origin case. To run the addon locally, set a TMDB key and start it 
 `uvicorn app:app --port 8000`.
 
 ## Changelog
+
+### 1.6.4
+
+- **Genre + sort on the mobile apps.** They only show a filter named `genre`, so 1.6.2/1.6.3's separate
+  Sort dropdown was invisible there and mobile lost sorting. The Genre list now also carries `Popular`,
+  `Latest`, `Top Rated` and "genre · Latest" / "genre · Top Rated" entries for every genre (45 per row).
+  Stremio Web keeps its separate Sort dropdown. An explicit Sort wins over a sort inside a Genre entry.
+  国产动画 and 综艺节目 get a Genre list of the sort orders only.
 
 ### 1.6.3
 

@@ -88,7 +88,8 @@ class GenreTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(extra["sort"]["optionsLimit"], 1)
                 self.assertFalse(extra["sort"]["isRequired"])
                 self.assertEqual(extra["genre"]["optionsLimit"], 1)
-                self.assertFalse(set(extra["genre"]["options"]) & set(app.SORT_OPTIONS))
+                # The genre list also carries the sort orders for mobile (see MobileGenreTests).
+                self.assertEqual(extra["genre"]["options"][:3], app.SORT_OPTIONS)
                 names = [e["name"] for e in by_id[catalog_id]["extra"]]
                 self.assertLess(names.index("sort"), names.index("genre"))
                 self.assertIn("search", extra)
@@ -99,7 +100,8 @@ class GenreTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(catalog=catalog_id):
                 extra = filters(catalog_id)
                 self.assertEqual(extra["sort"]["options"], app.SORT_OPTIONS)
-                self.assertNotIn("genre", extra)
+                # These rows fix their own genre, so their genre list is the sort orders only.
+                self.assertEqual(extra["genre"]["options"], app.SORT_OPTIONS)
                 self.assertNotIn("search", extra)
 
     def test_sort_is_the_first_dropdown_so_it_is_not_hidden_behind_the_filter_button(self):
@@ -180,6 +182,92 @@ class GenreTests(unittest.IsolatedAsyncioTestCase):
             # An unusable genre collapses to "no genre" and shares that cache entry.
             await app.discover_catalog("movie", "hk_movies", 0, "Latest", "动作冒险")
             self.assertEqual(tmdb_get.await_count, 4)
+
+
+class MobileGenreTests(unittest.IsolatedAsyncioTestCase):
+    """The mobile apps only draw a filter named `genre`, so it must carry sort too."""
+
+    def genre_list(self, catalog_id):
+        catalog = next(c for c in app.MANIFEST["catalogs"] if c["id"] == catalog_id)
+        return next(e for e in catalog["extra"] if e["name"] == "genre")["options"]
+
+    def test_genre_list_holds_sort_orders_genres_and_combinations(self):
+        options = self.genre_list("hk_movies")
+        self.assertEqual(options[:3], app.SORT_OPTIONS)
+        self.assertEqual(
+            options[3:9],
+            ["剧情", "剧情 · Latest", "剧情 · Top Rated", "喜剧", "喜剧 · Latest", "喜剧 · Top Rated"],
+        )
+        # 3 sort orders + 14 movie genres x (plain, Latest, Top Rated)
+        self.assertEqual(len(options), 3 + 14 * 3)
+        self.assertEqual(len(options), len(set(options)))
+
+    def test_series_rows_use_series_genres_and_movies_use_movie_genres(self):
+        self.assertIn("恐怖 · Latest", self.genre_list("hk_movies"))
+        self.assertNotIn("恐怖 · Latest", self.genre_list("cn_series"))
+        self.assertIn("动作冒险 · Top Rated", self.genre_list("cn_series"))
+        self.assertEqual(len(self.genre_list("cn_series")), 3 + 12 * 3)
+
+    def test_rows_with_their_own_genre_list_sort_orders_only(self):
+        for catalog_id in ("cn_donghua", "cn_variety"):
+            with self.subTest(catalog=catalog_id):
+                self.assertEqual(self.genre_list(catalog_id), app.SORT_OPTIONS)
+
+    def test_every_genre_entry_parses_to_something_discover_understands(self):
+        for catalog in app.MANIFEST["catalogs"]:
+            cfg = app.CATALOGS[(catalog["type"], catalog["id"])]
+            for option in self.genre_list(catalog["id"]):
+                with self.subTest(catalog=catalog["id"], option=option):
+                    genre, sort = app.parse_genre_value(option)
+                    self.assertTrue(genre or sort)
+                    if genre:
+                        self.assertIn(genre, app.genre_map(cfg["tmdb_type"]))
+                    if sort:
+                        self.assertIn(sort, app.SORT_OPTIONS)
+
+    def test_parse_genre_value(self):
+        parse = app.parse_genre_value
+        self.assertEqual(parse("悬疑"), ("悬疑", None))
+        self.assertEqual(parse("Latest"), (None, "Latest"))
+        self.assertEqual(parse("悬疑 · Latest"), ("悬疑", "Latest"))
+        self.assertEqual(parse("悬疑 · Top Rated"), ("悬疑", "Top Rated"))
+        for bad in (None, "", "Nonsense", "悬疑 · Nonsense", "Nonsense · Latest", "悬疑·Latest"):
+            with self.subTest(bad=bad):
+                self.assertEqual(parse(bad), (None, None))
+
+    def test_parse_extra_reads_combined_genre_entries(self):
+        parse = app.parse_extra
+        encoded = "%E5%96%9C%E5%89%A7%20%C2%B7%20Latest"  # 喜剧 · Latest
+        self.assertEqual(parse(f"genre={encoded}.json"), (0, "Latest", "喜剧"))
+        self.assertEqual(parse(f"genre={encoded}&skip=20.json"), (20, "Latest", "喜剧"))
+        self.assertEqual(parse("genre=%E5%96%9C%E5%89%A7.json"), (0, "Popular", "喜剧"))
+        # Stremio Web's Sort dropdown, when set, wins over the sort inside the genre entry.
+        self.assertEqual(parse(f"genre={encoded}&sort=Top%20Rated.json"), (0, "Top Rated", "喜剧"))
+
+    def test_catalog_route_applies_a_combined_genre_entry(self):
+        discover = AsyncMock(return_value={"metas": []})
+        with patch.object(app, "discover_catalog", new=discover), TestClient(app.app) as client:
+            client.get("/catalog/movie/hk_movies/genre=%E5%96%9C%E5%89%A7%20%C2%B7%20Top%20Rated.json")
+            client.get("/catalog/series/cn_donghua/genre=Latest.json")
+        self.assertEqual(
+            [call.args for call in discover.await_args_list],
+            [
+                ("movie", "hk_movies", 0, "Top Rated", "喜剧"),
+                ("series", "cn_donghua", 0, "Latest", None),
+            ],
+        )
+
+    async def test_combined_entry_reaches_tmdb_as_genre_plus_sort(self):
+        tmdb_get = AsyncMock(return_value={"results": []})
+        genre, sort = app.parse_genre_value("喜剧 · Latest")
+        with (
+            patch.object(app, "cache", app.SimpleTTLCache()),
+            patch.object(app, "tmdb_get", new=tmdb_get),
+        ):
+            await app.discover_catalog("movie", "hk_movies", 0, sort, genre)
+        params = tmdb_get.call_args.args[1]
+        self.assertEqual(params["with_genres"], "35")
+        self.assertEqual(params["sort_by"], "primary_release_date.desc")
 
 
 class ConfigTests(unittest.TestCase):
