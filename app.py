@@ -1,7 +1,12 @@
 import asyncio
+import base64
+import json
+import logging
 import os
 import re
 import time
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import date
 from typing import Any
 from urllib.parse import quote, unquote
@@ -10,8 +15,11 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
-APP_NAME = "Chinese & HK Catalog v1.5.0"
-APP_VERSION = "1.5.0"
+APP_NAME = "Chinese & HK Catalog v1.6.0"
+APP_VERSION = "1.6.0"
+
+# httpx logs full request URLs at INFO, which would include a v3 `api_key` parameter.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 TMDB_API_TOKEN = os.getenv("TMDB_API_TOKEN", "").strip()
 TMDB_API_KEY = os.getenv("TMDB_API_KEY", "").strip()
@@ -21,6 +29,47 @@ TMDB_IMAGE = "https://image.tmdb.org/t/p"
 CINEMETA_BASE = "https://v3-cinemeta.strem.io"
 
 SORT_OPTIONS = ["Popular", "Latest", "Top Rated"]
+
+# TMDB genre IDs are stable; labels are what Stremio shows in the dropdown.
+# Picking a genre lists that genre by popularity (the dropdown holds one value).
+TV_GENRES = {
+    "剧情": "18",
+    "喜剧": "35",
+    "犯罪": "80",
+    "悬疑": "9648",
+    "动作冒险": "10759",
+    "科幻奇幻": "10765",
+    "动画": "16",
+    "家庭": "10751",
+    "战争政治": "10768",
+    "纪录": "99",
+    "真人秀": "10764",
+    "儿童": "10762",
+}
+MOVIE_GENRES = {
+    "剧情": "18",
+    "喜剧": "35",
+    "动作": "28",
+    "爱情": "10749",
+    "犯罪": "80",
+    "惊悚": "53",
+    "悬疑": "9648",
+    "恐怖": "27",
+    "奇幻": "14",
+    "科幻": "878",
+    "动画": "16",
+    "历史": "36",
+    "战争": "10752",
+    "家庭": "10751",
+}
+
+
+def genre_map(tmdb_type: str) -> dict[str, str]:
+    return MOVIE_GENRES if tmdb_type == "movie" else TV_GENRES
+
+
+ALL_GENRE_LABELS = set(TV_GENRES) | set(MOVIE_GENRES)
+
 
 CATALOGS = {
     ("movie", "cn_movies"): {
@@ -35,6 +84,12 @@ CATALOGS = {
         "language": "zh-HK",
         "tmdb_type": "movie",
     },
+    ("movie", "tw_movies"): {
+        "name": "🇹🇼 台湾电影",
+        "country": "TW",
+        "language": "zh-TW",
+        "tmdb_type": "movie",
+    },
     ("series", "cn_series"): {
         "name": "🇨🇳 中国电视剧",
         "country": "CN",
@@ -47,45 +102,140 @@ CATALOGS = {
         "language": "zh-HK",
         "tmdb_type": "tv",
     },
+    ("series", "tw_series"): {
+        "name": "🇹🇼 台湾电视剧",
+        "country": "TW",
+        "language": "zh-TW",
+        "tmdb_type": "tv",
+    },
+    # Genre rows: subsets of cn_series, so they offer no search (it would repeat
+    # the 中国电视剧 results) and no genre dropdown, only sorting.
+    ("series", "cn_donghua"): {
+        "name": "🇨🇳 国产动画",
+        "country": "CN",
+        "language": "zh-CN",
+        "tmdb_type": "tv",
+        "with_genres": "16",
+    },
+    ("series", "cn_variety"): {
+        "name": "🇨🇳 综艺节目",
+        "country": "CN",
+        "language": "zh-CN",
+        "tmdb_type": "tv",
+        "with_genres": "10764|10767",
+    },
 }
 
-MANIFEST = {
-    # Must stay equal to the deployed ID so existing installs update in place.
-    "id": "com.twin.chinese-hk-catalog.v141",
-    "version": APP_VERSION,
-    "name": APP_NAME,
-    "description": (
-        "China/Hong Kong movie and TV catalogs with Chinese metadata, localized credits "
-        "where TMDB has native names, and Chinese episode titles/descriptions. "
-        "Other IMDb titles remain in Cinemeta English."
-    ),
-    "resources": [
-        "catalog",
-        {"name": "meta", "types": ["movie", "series"], "idPrefixes": ["tch:"]},
-    ],
-    "types": ["movie", "series"],
-    "catalogs": [
-        {
-            "type": media_type,
-            "id": catalog_id,
-            "name": cfg["name"],
-            "extra": [
-                {
-                    "name": "genre",
-                    "isRequired": False,
-                    "options": SORT_OPTIONS,
-                    "optionsLimit": 1,
-                },
-                {"name": "skip", "isRequired": False},
-                # Lets Stremio's search bar find CN/HK titles by their Chinese names.
-                {"name": "search", "isRequired": False},
-            ],
-        }
-        for (media_type, catalog_id), cfg in CATALOGS.items()
-    ],
-    "idPrefixes": ["tch:"],
-    "behaviorHints": {"adult": False, "p2p": False},
+CATALOG_IDS = [catalog_id for _, catalog_id in CATALOGS]
+SCRIPTS = {
+    "auto": "按地区 (CN 简体 · HK/TW 繁體)",
+    "hans": "简体中文优先",
+    "hant": "繁體中文優先",
 }
+
+
+@dataclass(frozen=True)
+class AddonConfig:
+    """Per-install settings, carried in the install URL path (see /configure)."""
+
+    script: str = "auto"
+    catalogs: tuple[str, ...] = tuple(CATALOG_IDS)
+    tmdb_key: str = ""
+
+    def encode(self) -> str:
+        data: dict[str, Any] = {"s": self.script, "c": list(self.catalogs)}
+        if self.tmdb_key:
+            data["k"] = self.tmdb_key
+        raw = json.dumps(data, separators=(",", ":")).encode()
+        return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+    def __repr__(self) -> str:  # keep the key out of any log line or traceback
+        return f"AddonConfig(script={self.script!r}, catalogs={self.catalogs!r})"
+
+
+DEFAULT_CONFIG = AddonConfig()
+current_config: ContextVar[AddonConfig] = ContextVar("current_config", default=DEFAULT_CONFIG)
+
+# A TMDB v3 API key is 32 hex characters; a v4 read access token is a JWT.
+TMDB_V3_KEY = re.compile(r"[0-9a-f]{32}")
+TMDB_V4_TOKEN = re.compile(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
+
+
+def valid_tmdb_key(key: Any) -> bool:
+    return isinstance(key, str) and bool(
+        TMDB_V3_KEY.fullmatch(key) or TMDB_V4_TOKEN.fullmatch(key)
+    )
+
+
+def decode_config(segment: str) -> AddonConfig | None:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{4,1024}", segment or ""):
+        return None
+    try:
+        padded = segment + "=" * (-len(segment) % 4)
+        data = json.loads(base64.urlsafe_b64decode(padded))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    script = data.get("s", "auto")
+    catalogs = data.get("c", CATALOG_IDS)
+    if script not in SCRIPTS or not isinstance(catalogs, list):
+        return None
+
+    tmdb_key = data.get("k", "")
+    if tmdb_key != "" and not valid_tmdb_key(tmdb_key):
+        return None
+
+    selected = tuple(cid for cid in CATALOG_IDS if cid in set(catalogs))
+    if not selected:
+        return None
+    return AddonConfig(script=script, catalogs=selected, tmdb_key=tmdb_key)
+
+
+def manifest_catalog(media_type: str, catalog_id: str, cfg: dict[str, Any]) -> dict[str, Any]:
+    options = list(SORT_OPTIONS)
+    if not cfg.get("with_genres"):
+        options += list(genre_map(cfg["tmdb_type"]))
+
+    extra: list[dict[str, Any]] = [
+        {"name": "genre", "isRequired": False, "options": options, "optionsLimit": 1},
+        {"name": "skip", "isRequired": False},
+    ]
+    if not cfg.get("with_genres"):
+        # Lets Stremio's search bar find titles by their Chinese names.
+        extra.append({"name": "search", "isRequired": False})
+
+    return {"type": media_type, "id": catalog_id, "name": cfg["name"], "extra": extra}
+
+
+def build_manifest(config: AddonConfig = DEFAULT_CONFIG) -> dict[str, Any]:
+    return {
+        # Must stay equal to the deployed ID so existing installs update in place.
+        "id": "com.twin.chinese-hk-catalog.v141",
+        "version": APP_VERSION,
+        "name": APP_NAME,
+        "description": (
+            "China/Hong Kong/Taiwan movie and TV catalogs with Chinese metadata, "
+            "search, localized credits, logos, trailers and episode titles. "
+            "Other IMDb titles remain in Cinemeta English."
+        ),
+        "resources": [
+            "catalog",
+            {"name": "meta", "types": ["movie", "series"], "idPrefixes": ["tch:"]},
+        ],
+        "types": ["movie", "series"],
+        "catalogs": [
+            manifest_catalog(media_type, catalog_id, cfg)
+            for (media_type, catalog_id), cfg in CATALOGS.items()
+            if catalog_id in config.catalogs
+        ],
+        "idPrefixes": ["tch:"],
+        "behaviorHints": {"adult": False, "p2p": False, "configurable": True},
+    }
+
+
+MANIFEST = build_manifest()
 
 
 class SimpleTTLCache:
@@ -110,6 +260,75 @@ cache = SimpleTTLCache()
 http = httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=8.0))
 tmdb_sem = asyncio.Semaphore(10)
 
+# Optional shared cache. Vercel's in-memory cache is lost whenever a new instance
+# starts, so a cold detail page refetches everything from TMDB. Connecting an
+# Upstash Redis (Vercel Storage / Marketplace) sets these variables; without them
+# the addon works exactly as before, memory-only.
+REDIS_URL = (
+    os.getenv("KV_REST_API_URL") or os.getenv("UPSTASH_REDIS_REST_URL") or ""
+).strip().rstrip("/")
+REDIS_TOKEN = (
+    os.getenv("KV_REST_API_TOKEN") or os.getenv("UPSTASH_REDIS_REST_TOKEN") or ""
+).strip()
+REDIS_PREFIX = "tch:v1:"
+REDIS_MAX_BYTES = 900_000  # Upstash's request limit is 1 MB
+
+
+async def redis_command(*args: Any) -> Any:
+    if not REDIS_URL or not REDIS_TOKEN:
+        return None
+    try:
+        response = await http.post(
+            REDIS_URL,
+            json=[str(arg) for arg in args],
+            headers={"Authorization": f"Bearer {REDIS_TOKEN}"},
+            timeout=2.0,
+        )
+        response.raise_for_status()
+        return response.json().get("result")
+    except Exception:
+        # The shared cache is an optimisation; never fail a request because of it.
+        return None
+
+
+async def cache_get(key: str) -> Any | None:
+    value = cache.get(key)
+    if value is not None:
+        return value
+
+    raw = await redis_command("GET", REDIS_PREFIX + key)
+    if not isinstance(raw, str):
+        return None
+    try:
+        stored = json.loads(raw)
+        expires_at = float(stored["e"])
+        value = stored["v"]
+    except Exception:
+        return None
+
+    remaining = int(expires_at - time.time())
+    if remaining <= 0 or value is None:
+        return None
+    cache.set(key, value, remaining)
+    return value
+
+
+async def cache_set(key: str, value: Any, ttl_seconds: int) -> None:
+    cache.set(key, value, ttl_seconds)
+    if not REDIS_URL:
+        return
+    try:
+        raw = json.dumps(
+            {"e": time.time() + ttl_seconds, "v": value},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError):
+        return
+    if len(raw.encode()) <= REDIS_MAX_BYTES:
+        await redis_command("SET", REDIS_PREFIX + key, raw, "EX", ttl_seconds)
+
+
 app = FastAPI(title=APP_NAME, version=APP_VERSION)
 
 # Starlette's CORSMiddleware only adds Access-Control-Allow-Origin when the request
@@ -133,8 +352,8 @@ async def always_cors(request: Request, call_next):
     return response
 
 
-def require_tmdb_credentials() -> None:
-    if not TMDB_API_TOKEN and not TMDB_API_KEY:
+def require_tmdb_credentials(user_key: str = "") -> None:
+    if not user_key and not TMDB_API_TOKEN and not TMDB_API_KEY:
         raise HTTPException(
             status_code=503,
             detail="TMDB is not configured. Set TMDB_API_TOKEN (recommended) or TMDB_API_KEY in Vercel.",
@@ -142,11 +361,19 @@ def require_tmdb_credentials() -> None:
 
 
 async def tmdb_get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-    require_tmdb_credentials()
+    # An install made on /configure carries its own TMDB key; installs without one
+    # (the root manifest) keep using the server's key.
+    user_key = current_config.get().tmdb_key
+    require_tmdb_credentials(user_key)
     params = dict(params or {})
     headers = {"accept": "application/json"}
 
-    if TMDB_API_TOKEN:
+    if user_key:
+        if user_key.startswith("eyJ"):
+            headers["Authorization"] = f"Bearer {user_key}"
+        else:
+            params["api_key"] = user_key
+    elif TMDB_API_TOKEN:
         headers["Authorization"] = f"Bearer {TMDB_API_TOKEN}"
     else:
         params["api_key"] = TMDB_API_KEY
@@ -157,7 +384,25 @@ async def tmdb_get(path: str, params: dict[str, Any] | None = None) -> dict[str,
     if response.status_code == 404:
         return {}
 
-    response.raise_for_status()
+    if response.status_code == 401 and user_key:
+        # Never fall back to the server's key: that would hide a broken install.
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "TMDB rejected the API key saved in this install. "
+                "Open the addon's Configure page and enter a valid key."
+            ),
+        )
+
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        # httpx's message contains the full URL, which holds a v3 `api_key`.
+        raise httpx.HTTPStatusError(
+            f"TMDB returned {response.status_code} for {path}",
+            request=exc.request,
+            response=exc.response,
+        ) from None
     return response.json()
 
 
@@ -214,11 +459,12 @@ def parse_extra(extra_args: str | None) -> tuple[int, str]:
     except ValueError:
         skip = 0
 
-    sort_mode = values.get("genre", "Popular")
-    if sort_mode not in SORT_OPTIONS:
-        sort_mode = "Popular"
+    # The single dropdown holds either a sort order or a genre label.
+    selection = values.get("genre", "Popular")
+    if selection not in SORT_OPTIONS and selection not in ALL_GENRE_LABELS:
+        selection = "Popular"
 
-    return skip, sort_mode
+    return skip, selection
 
 
 def parse_search(extra_args: str | None) -> str:
@@ -249,7 +495,7 @@ def discover_sort_params(tmdb_type: str, sort_mode: str) -> dict[str, str]:
 
 async def imdb_id_for_tmdb(tmdb_type: str, tmdb_id: int) -> str | None:
     cache_key = f"external:{tmdb_type}:{tmdb_id}"
-    cached = cache.get(cache_key)
+    cached = await cache_get(cache_key)
     if cached is not None:
         return cached or None
 
@@ -259,7 +505,7 @@ async def imdb_id_for_tmdb(tmdb_type: str, tmdb_id: int) -> str | None:
     if not isinstance(imdb_id, str) or not re.fullmatch(r"tt\d+", imdb_id):
         imdb_id = None
 
-    cache.set(cache_key, imdb_id or "", 7 * 24 * 60 * 60)
+    await cache_set(cache_key, imdb_id or "", 7 * 24 * 60 * 60)
     return imdb_id
 
 
@@ -378,6 +624,30 @@ async def catalog_metas(
     return metas
 
 
+def catalog_language(cfg: dict[str, Any], config: AddonConfig | None = None) -> str:
+    """TMDB `language` for a catalog row, honouring the install's script preference."""
+    script = (config or current_config.get()).script
+    if script == "hans":
+        return "zh-CN"
+    if script == "hant":
+        return "zh-HK" if cfg["country"] == "HK" else "zh-TW"
+    return cfg["language"]
+
+
+def discover_genres(cfg: dict[str, Any], selection: str) -> str | None:
+    """TMDB `with_genres` for a row plus an optional genre chosen in the dropdown."""
+    row_genres = cfg.get("with_genres") or ""
+    chosen = genre_map(cfg["tmdb_type"]).get(selection)
+    if not chosen:
+        return row_genres or None
+    if not row_genres:
+        return chosen
+    if "|" in row_genres:
+        # TMDB cannot mix AND with an OR list; those rows offer no genre dropdown.
+        return row_genres
+    return f"{row_genres},{chosen}"  # comma = AND
+
+
 async def discover_catalog(
     media_type: str,
     catalog_id: str,
@@ -389,11 +659,16 @@ async def discover_catalog(
     if not cfg:
         return {"metas": []}
 
-    if sort_mode not in SORT_OPTIONS:
-        sort_mode = "Popular"
+    # `sort_mode` is the dropdown value: a sort order, or a genre label (listed by popularity).
+    selection = (
+        sort_mode
+        if sort_mode in SORT_OPTIONS or sort_mode in genre_map(cfg["tmdb_type"])
+        else "Popular"
+    )
+    language = catalog_language(cfg)
 
-    cache_key = f"catalog:{media_type}:{catalog_id}:{sort_mode}:{skip}:v2"
-    cached = cache.get(cache_key)
+    cache_key = f"catalog:{media_type}:{catalog_id}:{selection}:{skip}:{language}:v3"
+    cached = await cache_get(cache_key)
     if cached is not None:
         return cached
 
@@ -401,30 +676,35 @@ async def discover_catalog(
     tmdb_type = cfg["tmdb_type"]
 
     params: dict[str, Any] = {
-        "language": cfg["language"],
+        "language": language,
         "with_origin_country": cfg["country"],
         "include_adult": "false",
         "page": page,
     }
-    params.update(discover_sort_params(tmdb_type, sort_mode))
+    with_genres = discover_genres(cfg, selection)
+    if with_genres:
+        params["with_genres"] = with_genres
+    params.update(
+        discover_sort_params(tmdb_type, selection if selection in SORT_OPTIONS else "Popular")
+    )
 
     data = await tmdb_get(f"/discover/{tmdb_type}", params)
     metas = await catalog_metas(media_type, tmdb_type, data.get("results") or [])
 
     payload = {"metas": metas}
-    cache.set(cache_key, payload, 6 * 60 * 60)
+    await cache_set(cache_key, payload, 6 * 60 * 60)
     return payload
 
 
 CHINESE_ORIGINAL_LANGUAGES = {"zh", "cn"}  # TMDB uses "cn" for Cantonese
+CHINESE_COUNTRIES = ("HK", "CN", "TW")  # priority when a title lists several
 
 
 def origin_bucket(countries: set[str]) -> str | None:
-    """Same CN/HK choice as get_chinese_bundle, so a title lands in one catalog."""
-    if "HK" in countries:
-        return "HK"
-    if "CN" in countries:
-        return "CN"
+    """Same HK > CN > TW choice as get_chinese_bundle, so a title lands in one catalog."""
+    for country in CHINESE_COUNTRIES:
+        if country in countries:
+            return country
     return None
 
 
@@ -434,7 +714,10 @@ async def search_origin_bucket(tmdb_type: str, item: dict[str, Any]) -> str | No
         for code in (item.get("origin_country") or [])
         if isinstance(code, str)
     }
-    if not listed & {"CN", "HK"} and item.get("original_language") not in CHINESE_ORIGINAL_LANGUAGES:
+    if (
+        not listed & set(CHINESE_COUNTRIES)
+        and item.get("original_language") not in CHINESE_ORIGINAL_LANGUAGES
+    ):
         return None
 
     # Movie search results carry no country; the en-US detail is also what the
@@ -453,8 +736,9 @@ async def search_catalog(
     if not cfg or not query:
         return {"metas": []}
 
-    cache_key = f"search:{media_type}:{catalog_id}:{query}:{skip}"
-    cached = cache.get(cache_key)
+    language = catalog_language(cfg)
+    cache_key = f"search:{media_type}:{catalog_id}:{query}:{skip}:{language}"
+    cached = await cache_get(cache_key)
     if cached is not None:
         return cached
 
@@ -463,7 +747,7 @@ async def search_catalog(
         f"/search/{tmdb_type}",
         {
             "query": query,
-            "language": cfg["language"],
+            "language": language,
             "include_adult": "false",
             "page": (skip // 20) + 1,
         },
@@ -485,7 +769,7 @@ async def search_catalog(
     ]
 
     payload = {"metas": await catalog_metas(media_type, tmdb_type, matching)}
-    cache.set(cache_key, payload, 60 * 60)
+    await cache_set(cache_key, payload, 60 * 60)
     return payload
 
 
@@ -530,8 +814,16 @@ def country_codes(details: dict[str, Any]) -> set[str]:
 
 
 def locale_chain(country: str) -> list[str]:
+    """Locale preference for a title's metadata, shaped by the install's script setting."""
+    script = current_config.get().script
+    if script == "hans":
+        return ["zh-CN", "zh-TW", "zh-HK"]
+    if script == "hant":
+        return ["zh-HK", "zh-TW", "zh-CN"] if country == "HK" else ["zh-TW", "zh-HK", "zh-CN"]
     if country == "HK":
         return ["zh-HK", "zh-TW", "zh-CN"]
+    if country == "TW":
+        return ["zh-TW", "zh-HK", "zh-CN"]
     return ["zh-CN", "zh-TW", "zh-HK"]
 
 
@@ -541,8 +833,8 @@ async def get_details(
     locale: str,
     include_credits: bool = False,
 ) -> dict[str, Any]:
-    cache_key = f"details:{tmdb_type}:{tmdb_id}:{locale}:{int(include_credits)}:v2"
-    cached = cache.get(cache_key)
+    cache_key = f"details:{tmdb_type}:{tmdb_id}:{locale}:{int(include_credits)}:v3"
+    cached = await cache_get(cache_key)
     if cached is not None:
         return cached
 
@@ -550,50 +842,110 @@ async def get_details(
 
     if include_credits:
         # The full (credits) request is the one the detail page uses, so fetch the
-        # Chinese logos in the same call instead of a separate /images request.
+        # Chinese logos, posters and trailers in the same call.
         credits_part = "credits" if tmdb_type == "movie" else "aggregate_credits"
-        params["append_to_response"] = f"{credits_part},images"
+        params["append_to_response"] = f"{credits_part},images,videos"
         params["include_image_language"] = "zh"
+        params["include_video_language"] = "zh"
 
     data = await tmdb_get(f"/{tmdb_type}/{tmdb_id}", params)
-    cache.set(cache_key, data, 24 * 60 * 60)
+    await cache_set(cache_key, data, 24 * 60 * 60)
     return data
 
 
-def pick_chinese_logo(images: Any, country: str | None) -> str | None:
+REGION_BY_LOCALE = {"zh-CN": "CN", "zh-TW": "TW", "zh-HK": "HK"}
+
+
+def preferred_regions(locales: list[str]) -> list[str]:
+    """TMDB region codes in locale order; Singapore (simplified) follows China."""
+    regions: list[str] = []
+    for locale in locales:
+        region = REGION_BY_LOCALE.get(locale)
+        if region and region not in regions:
+            regions.append(region)
+            if region == "CN":
+                regions.append("SG")
+    return regions
+
+
+def region_rank(item: dict[str, Any], regions: list[str]) -> int:
+    region = str(item.get("iso_3166_1") or "").upper()
+    return regions.index(region) if region in regions else len(regions)
+
+
+def pick_chinese_image(images: Any, kind: str, locales: list[str]) -> str | None:
     """
-    Best Chinese-language title logo from TMDB `images.logos`: prefer the matching
-    script region (HK/TW traditional for HK titles, CN simplified for CN titles),
-    then PNG over SVG, then TMDB's vote average.
+    Best Chinese-language image of `kind` ("logos" or "posters") from TMDB `images`:
+    prefer the script region the locale chain favours (HK/TW traditional, CN
+    simplified), then PNG/JPG over SVG, then TMDB's vote average.
     """
     if not isinstance(images, dict):
         return None
 
-    preferred_regions = ["HK", "TW", "CN"] if country == "HK" else ["CN", "SG", "TW", "HK"]
+    regions = preferred_regions(locales)
 
-    def rank(logo: dict[str, Any]) -> tuple[int, int, float]:
-        region = str(logo.get("iso_3166_1") or "").upper()
-        region_rank = (
-            preferred_regions.index(region)
-            if region in preferred_regions
-            else len(preferred_regions)
-        )
-        is_svg = str(logo.get("file_path") or "").lower().endswith(".svg")
-        return region_rank, int(is_svg), -float(logo.get("vote_average") or 0)
+    def rank(image: dict[str, Any]) -> tuple[int, int, float]:
+        is_svg = str(image.get("file_path") or "").lower().endswith(".svg")
+        return region_rank(image, regions), int(is_svg), -float(image.get("vote_average") or 0)
 
-    logos = [
-        logo
-        for logo in (images.get("logos") or [])
-        if isinstance(logo, dict)
-        and logo.get("iso_639_1") == "zh"
-        and isinstance(logo.get("file_path"), str)
+    candidates = [
+        image
+        for image in (images.get(kind) or [])
+        if isinstance(image, dict)
+        and image.get("iso_639_1") == "zh"
+        and isinstance(image.get("file_path"), str)
     ]
-    if not logos:
+    if not candidates:
         return None
 
-    best = min(logos, key=rank)
-    size = "original" if best["file_path"].lower().endswith(".svg") else "w500"
-    return image_url(best["file_path"], size)
+    best = min(candidates, key=rank)
+    if best["file_path"].lower().endswith(".svg"):
+        return image_url(best["file_path"], "original")
+    return image_url(best["file_path"], "w500")
+
+
+def pick_chinese_logo(images: Any, country: str | None) -> str | None:
+    return pick_chinese_image(images, "logos", locale_chain(country or "CN"))
+
+
+def pick_chinese_trailers(videos: Any, locales: list[str]) -> list[dict[str, str]]:
+    """
+    Chinese YouTube trailers/teasers from TMDB `videos`, best first: Trailer before
+    Teaser, preferred region, official uploads, then most recent.
+    """
+    results = videos.get("results") if isinstance(videos, dict) else None
+    regions = preferred_regions(locales)
+
+    def rank(video: dict[str, Any]) -> tuple[int, int, int]:
+        return (
+            0 if video.get("type") == "Trailer" else 1,
+            region_rank(video, regions),
+            0 if video.get("official") else 1,
+        )
+
+    candidates = [
+        video
+        for video in (results or [])
+        if isinstance(video, dict)
+        and video.get("iso_639_1") == "zh"
+        and video.get("site") == "YouTube"
+        and video.get("type") in {"Trailer", "Teaser"}
+        and isinstance(video.get("key"), str)
+        and re.fullmatch(r"[A-Za-z0-9_-]{6,20}", video["key"])
+    ]
+
+    # Newest first (ISO timestamps sort lexically); the stable sort below keeps
+    # that order within equal ranks.
+    candidates.sort(key=lambda video: str(video.get("published_at") or ""), reverse=True)
+
+    seen: set[str] = set()
+    trailers: list[dict[str, str]] = []
+    for video in sorted(candidates, key=rank):
+        if video["key"] in seen:
+            continue
+        seen.add(video["key"])
+        trailers.append({"title": str(video.get("name") or "预告片"), "ytId": video["key"]})
+    return trailers[:3]
 
 
 def merge_localized_details(
@@ -633,7 +985,7 @@ async def get_chinese_bundle(
 ) -> tuple[dict[str, Any] | None, str | None, dict[str, Any] | None, list[str]]:
     """
     Returns:
-      localized details, country (CN/HK), embedded credits, locale preference chain.
+      localized details, country (HK/CN/TW), embedded credits, locale preference chain.
 
     API reduction:
       - English detail determines origin.
@@ -641,13 +993,8 @@ async def get_chinese_bundle(
       - Fallback locale details are requested only for fields without CJK text.
     """
     english = await get_details(tmdb_type, tmdb_id, "en-US", False)
-    countries = country_codes(english)
-
-    if "HK" in countries:
-        chosen_country = "HK"
-    elif "CN" in countries:
-        chosen_country = "CN"
-    else:
+    chosen_country = origin_bucket(country_codes(english))
+    if not chosen_country:
         return None, None, None, []
 
     locales = locale_chain(chosen_country)
@@ -867,8 +1214,8 @@ async def get_season_details(
     season_number: int,
     locale: str,
 ) -> dict[str, Any]:
-    cache_key = f"season:{tv_id}:{season_number}:{locale}"
-    cached = cache.get(cache_key)
+    cache_key = season_cache_key(tv_id, season_number, locale)
+    cached = await cache_get(cache_key)
     if cached is not None:
         return cached
 
@@ -876,8 +1223,55 @@ async def get_season_details(
         f"/tv/{tv_id}/season/{season_number}",
         {"language": locale},
     )
-    cache.set(cache_key, data, 24 * 60 * 60)
+    await cache_set(cache_key, data, SEASON_TTL)
     return data
+
+
+MAX_SEASONS = 60
+SEASON_TTL = 24 * 60 * 60
+APPEND_LIMIT = 20  # TMDB allows at most 20 appended sub-requests per call
+
+
+def season_cache_key(tv_id: int, season_number: int, locale: str) -> str:
+    return f"season:{tv_id}:{season_number}:{locale}"
+
+
+async def prefetch_seasons(tv_id: int, numbers: list[int], locale: str) -> None:
+    """
+    Warm the per-season cache with one `/tv/{id}?append_to_response=season/1,...`
+    call per 20 seasons instead of one request per season. Best effort: a failed
+    chunk is skipped and `get_season_details` fetches those seasons individually.
+    """
+    cached = await asyncio.gather(
+        *(cache_get(season_cache_key(tv_id, number, locale)) for number in numbers)
+    )
+    missing = [number for number, hit in zip(numbers, cached) if hit is None]
+    if len(missing) < 2:  # a single season costs one request either way
+        return
+
+    async def fetch_chunk(chunk: list[int]) -> None:
+        try:
+            data = await tmdb_get(
+                f"/tv/{tv_id}",
+                {
+                    "language": locale,
+                    "append_to_response": ",".join(f"season/{number}" for number in chunk),
+                },
+            )
+        except Exception:
+            return
+
+        for number in chunk:
+            season = data.get(f"season/{number}")
+            if isinstance(season, dict) and isinstance(season.get("episodes"), list):
+                await cache_set(season_cache_key(tv_id, number, locale), season, SEASON_TTL)
+
+    await asyncio.gather(
+        *(
+            fetch_chunk(missing[start : start + APPEND_LIMIT])
+            for start in range(0, len(missing), APPEND_LIMIT)
+        )
+    )
 
 
 def make_episode_id(series_id: str, season_number: int, episode_number: int) -> str:
@@ -911,7 +1305,7 @@ def season_numbers_from_details(details: dict[str, Any]) -> list[int]:
         if type(count) is int and count > 0:
             numbers = list(range(1, count + 1))
 
-    return numbers[:20]
+    return numbers[:MAX_SEASONS]
 
 
 async def localized_season(
@@ -994,9 +1388,9 @@ def build_series_videos(
         number
         for number in seasons_by_number
         if type(number) is int and number > 0
-    )[:20]
+    )[:MAX_SEASONS]
     if not season_numbers:
-        season_numbers = sorted({season for season, _ in existing_by_episode})[:20]
+        season_numbers = sorted({season for season, _ in existing_by_episode})[:MAX_SEASONS]
     allowed_seasons = set(season_numbers)
 
     videos_by_episode: dict[tuple[int, int], dict[str, Any]] = {}
@@ -1067,6 +1461,9 @@ async def localize_series_episodes(
     locales: list[str],
 ) -> None:
     season_numbers = season_numbers_from_details(series_details)
+    # Long shows: fetch the preferred locale in bulk; the per-season calls below
+    # then hit the cache. Fallback locales are only requested when needed.
+    await prefetch_seasons(tv_id, season_numbers, locales[0])
     results = await asyncio.gather(
         *(localized_season(tv_id, number, locales) for number in season_numbers),
         return_exceptions=True,
@@ -1167,8 +1564,9 @@ async def metadata_proxy(media_type: str, item_id: str) -> dict[str, Any]:
 
     tmdb_id, imdb_id = parsed
     stream_id = stream_base_id(tmdb_id, imdb_id)
-    cache_key = f"meta-custom:{media_type}:{item_id}:v150"
-    cached = cache.get(cache_key)
+    script = current_config.get().script
+    cache_key = f"meta-custom:{media_type}:{item_id}:{script}:v160"
+    cached = await cache_get(cache_key)
     if cached is not None:
         return cached
 
@@ -1201,7 +1599,7 @@ async def metadata_proxy(media_type: str, item_id: str) -> dict[str, Any]:
 
         if not meta:
             payload = {"meta": None}
-            cache.set(cache_key, payload, 30 * 60)
+            await cache_set(cache_key, payload, 30 * 60)
             return payload
 
         meta["id"] = item_id
@@ -1214,7 +1612,7 @@ async def metadata_proxy(media_type: str, item_id: str) -> dict[str, Any]:
 
         sanitize_meta_for_stremio(meta)
         payload = {"meta": meta}
-        cache.set(cache_key, payload, 12 * 60 * 60)
+        await cache_set(cache_key, payload, 12 * 60 * 60)
         return payload
 
     # Start from Cinemeta internally so we retain useful IMDb metadata and,
@@ -1228,7 +1626,10 @@ async def metadata_proxy(media_type: str, item_id: str) -> dict[str, Any]:
     if chinese.get("overview"):
         meta["description"] = chinese["overview"]
 
-    poster = image_url(chinese.get("poster_path"), "w500")
+    # Prefer a poster with Chinese title art; otherwise TMDB's default poster.
+    poster = pick_chinese_image(chinese.get("images"), "posters", locales) or image_url(
+        chinese.get("poster_path"), "w500"
+    )
     background = image_url(chinese.get("backdrop_path"), "original")
 
     if poster:
@@ -1240,11 +1641,18 @@ async def metadata_proxy(media_type: str, item_id: str) -> dict[str, Any]:
 
     # Cinemeta's logo is the English title art; prefer TMDB's Chinese logo, and
     # otherwise show no logo so Stremio displays the Chinese name as text.
-    chinese_logo = pick_chinese_logo(chinese.get("images"), chosen_country)
+    chinese_logo = pick_chinese_image(chinese.get("images"), "logos", locales)
     if chinese_logo:
         meta["logo"] = chinese_logo
     else:
         meta.pop("logo", None)
+
+    # Chinese trailers replace Cinemeta's (usually English) ones; keep Cinemeta's
+    # when TMDB has no Chinese YouTube trailer or teaser.
+    trailers = pick_chinese_trailers(chinese.get("videos"), locales)
+    if trailers:
+        meta["trailerStreams"] = trailers
+        meta["trailers"] = [{"source": t["ytId"], "type": "Trailer"} for t in trailers]
 
     localized_genres = [
         genre.get("name")
@@ -1305,8 +1713,16 @@ async def metadata_proxy(media_type: str, item_id: str) -> dict[str, Any]:
 
     sanitize_meta_for_stremio(meta)
     payload = {"meta": meta}
-    cache.set(cache_key, payload, 12 * 60 * 60)
+    await cache_set(cache_key, payload, 12 * 60 * 60)
     return payload
+
+
+NO_CACHE_HEADERS = {
+    "Cache-Control": "no-cache, no-store, must-revalidate",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+CATALOG_HEADERS = {"Cache-Control": "public, max-age=1800"}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1314,10 +1730,10 @@ async def home(request: Request):
     host = request.headers.get("host", "your-project.vercel.app")
     scheme = request.headers.get("x-forwarded-proto", request.url.scheme or "https")
     manifest_url = f"{scheme}://{host}/manifest.json"
-    stremio_url = f"stremio://{host}/manifest.json"
     configured = bool(TMDB_API_TOKEN or TMDB_API_KEY)
 
     status = "✅ TMDB configured" if configured else "⚠️ TMDB token not configured"
+    rows = " · ".join(cfg["name"] for cfg in CATALOGS.values())
 
     return f"""<!doctype html>
 <html>
@@ -1334,51 +1750,215 @@ async def home(request: Request):
 </head>
 <body>
   <h1>{APP_NAME}</h1>
-  <p>🇨🇳 中国电影 · 🇭🇰 香港电影 · 🇨🇳 中国电视剧 · 🇭🇰 香港电视剧</p>
-  <p>Popular · Latest · Top Rated</p>
-  <p>CN/HK: 中文详情由本 addon 独立提供；播放仍使用 IMDb ID 交给 AIOStreams/TorBox。</p>
+  <p>{rows}</p>
+  <p>Popular · Latest · Top Rated · 按类型筛选 · 中文搜索</p>
+  <p>CN/HK/TW: 中文详情、海报、预告片由本 addon 独立提供；播放仍使用 IMDb ID 交给 AIOStreams/TorBox。</p>
   <p>其他国家：保留 Cinemeta English metadata。</p>
   <p>{status}</p>
-  <p><a class="button" href="{stremio_url}">Install in Stremio</a></p>
-  <p>Manifest: <code>{manifest_url}</code></p>
+  <p><a class="button" href="/configure">Install in Stremio</a></p>
+  <p class="muted">Install 前需要先在设置页填写你自己的 TMDB API key，并选择简繁体与分类。
+  Already installed from <code>{manifest_url}</code>? It keeps working unchanged.</p>
   <p>This addon provides catalogs and metadata only. It does not provide streams.</p>
   <p class="muted">This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
 </body>
 </html>"""
 
 
+CONFIGURE_PAGE = """<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Configure · __NAME__</title>
+  <style>
+    body{font-family:system-ui,sans-serif;max-width:760px;margin:48px auto;padding:0 20px;line-height:1.55}
+    code{background:#f3f3f3;padding:2px 6px;border-radius:5px;word-break:break-all}
+    a.button,button{display:inline-block;padding:10px 16px;background:#5b45ff;color:#fff;text-decoration:none;border:0;border-radius:8px;font:inherit;cursor:pointer}
+    button:disabled{opacity:.55;cursor:default}
+    button.plain{background:#eee;color:#222;padding:4px 10px}
+    input[type=text]{width:100%;box-sizing:border-box;padding:9px 10px;font:inherit;border:1px solid #bbb;border-radius:8px}
+    label{display:block;margin:4px 0}
+    .muted{opacity:.72;font-size:.92rem}
+    .err{color:#b3261e}
+    h2{margin:28px 0 8px;font-size:1.1rem}
+  </style>
+</head>
+<body>
+  <h1>Configure · 设置</h1>
+  <p class="muted">__NAME__</p>
+
+  <h2>1. TMDB API key（必填 · required）</h2>
+  <p class="muted">Get a free key at
+    <a href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener">themoviedb.org/settings/api</a>.
+    Paste either the <b>API Key</b> (32 characters) or the <b>API Read Access Token</b> (starts with <code>eyJ</code>).
+    It is checked directly with TMDB from your browser, and stored only inside your install link.</p>
+  <input type="text" id="key" autocomplete="off" spellcheck="false" placeholder="TMDB API key or read access token">
+
+  <h2>2. 文字 · Script</h2>
+  <div id="scripts"></div>
+
+  <h2>3. 分类 · Catalogs</h2>
+  <div id="catalogs"></div>
+
+  <p><button id="go">Generate install link</button></p>
+  <p id="msg" class="err" role="alert"></p>
+
+  <div id="out" hidden>
+    <p><a class="button" id="install" href="#">Install in Stremio</a></p>
+    <p>Or paste this URL into Stremio's addon search box:<br>
+      <code id="url"></code> <button class="plain" id="copy" type="button">Copy</button></p>
+    <p class="muted">The link contains your TMDB key. Keep it private.</p>
+  </div>
+
+  <p class="muted"><a href="/">← Back</a> · This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
+
+<script>
+const STATE = __STATE__;
+const $ = (id) => document.getElementById(id);
+const V3 = /^[0-9a-f]{32}$/;
+const V4 = /^eyJ[\\w-]+\\.[\\w-]+\\.[\\w-]+$/;
+
+$("key").value = STATE.key || "";
+for (const [id, label] of Object.entries(STATE.scripts)) {
+  const row = document.createElement("label");
+  row.innerHTML = '<input type="radio" name="script"> <span></span>';
+  const input = row.querySelector("input");
+  input.value = id;
+  input.checked = id === STATE.script;
+  row.querySelector("span").textContent = label;
+  $("scripts").appendChild(row);
+}
+for (const catalog of STATE.catalogs) {
+  const row = document.createElement("label");
+  row.innerHTML = '<input type="checkbox" name="catalog"> <span></span>';
+  const input = row.querySelector("input");
+  input.value = catalog.id;
+  input.checked = STATE.selected.includes(catalog.id);
+  row.querySelector("span").textContent = catalog.name;
+  $("catalogs").appendChild(row);
+}
+
+function b64url(text) {
+  return btoa(text).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/, "");
+}
+
+// "ok" | "bad" | "unreachable". Runs in the browser so the key never touches our server.
+async function checkKey(key) {
+  const headers = { accept: "application/json" };
+  let url = "https://api.themoviedb.org/3/configuration";
+  if (key.startsWith("eyJ")) headers.Authorization = "Bearer " + key;
+  else url += "?api_key=" + encodeURIComponent(key);
+  try {
+    const response = await fetch(url, { headers });
+    if (response.ok) return "ok";
+    return response.status === 401 ? "bad" : "unreachable";
+  } catch (error) {
+    return "unreachable";
+  }
+}
+
+function fail(text) {
+  $("msg").textContent = text;
+  $("out").hidden = true;
+}
+
+$("go").addEventListener("click", async () => {
+  const key = $("key").value.trim();
+  const script = document.querySelector('input[name="script"]:checked');
+  const catalogs = [...document.querySelectorAll('input[name="catalog"]:checked')].map((x) => x.value);
+  $("msg").textContent = "";
+  $("out").hidden = true;
+
+  if (!key) return fail("Enter your TMDB API key first. 请先填写 TMDB API key。");
+  if (!V3.test(key) && !V4.test(key))
+    return fail("That is not a TMDB key: use the 32-character API Key or the Read Access Token (eyJ…).");
+  if (!script) return fail("Choose a script. 请选择文字。");
+  if (!catalogs.length) return fail("Select at least one catalog. 至少选择一个分类。");
+
+  $("go").disabled = true;
+  $("go").textContent = "Checking key…";
+  const result = await checkKey(key);
+  $("go").disabled = false;
+  $("go").textContent = "Generate install link";
+  if (result === "bad") return fail("TMDB rejected this key. Check it and try again. TMDB 不接受此 key。");
+  if (result === "unreachable") return fail("Could not verify the key with TMDB right now. Try again in a moment.");
+
+  const config = b64url(JSON.stringify({ s: script.value, c: catalogs, k: key }));
+  const base = location.host + "/" + config + "/manifest.json";
+  $("install").href = "stremio://" + base;
+  $("url").textContent = location.protocol + "//" + base;
+  $("out").hidden = false;
+});
+
+$("copy").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText($("url").textContent);
+    $("copy").textContent = "Copied";
+  } catch (error) {
+    $("copy").textContent = "Select the URL and copy it";
+  }
+});
+</script>
+</body>
+</html>"""
+
+
+def render_configure_page(config: AddonConfig) -> str:
+    state = {
+        "script": config.script,
+        "selected": list(config.catalogs),
+        "key": config.tmdb_key,
+        "scripts": SCRIPTS,
+        "catalogs": [
+            {"id": catalog_id, "name": cfg["name"]}
+            for (_, catalog_id), cfg in CATALOGS.items()
+        ],
+    }
+    # Inside <script>: keep the JSON from ever closing the tag or starting a comment.
+    payload = (
+        json.dumps(state, ensure_ascii=False)
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+    )
+    return CONFIGURE_PAGE.replace("__NAME__", APP_NAME).replace("__STATE__", payload)
+
+
+def config_from_segment(segment: str) -> AddonConfig:
+    config = decode_config(segment)
+    if config is None:
+        raise HTTPException(status_code=404, detail="Invalid addon configuration")
+    return config
+
+
+async def call_with_config(config: AddonConfig, handler, *args):
+    token = current_config.set(config)
+    try:
+        return await handler(*args)
+    finally:
+        current_config.reset(token)
+
+
+@app.get("/configure", response_class=HTMLResponse)
+async def configure():
+    return render_configure_page(DEFAULT_CONFIG)
+
+
 @app.get("/manifest.json")
 async def manifest():
-    return JSONResponse(
-        MANIFEST,
-        headers={
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-            "Pragma": "no-cache",
-            "Expires": "0",
-        },
-    )
+    return JSONResponse(MANIFEST, headers=NO_CACHE_HEADERS)
 
 
 @app.get("/v140/manifest.json")
 async def manifest_v140():
-    return JSONResponse(
-        MANIFEST,
-        headers={
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-            "Pragma": "no-cache",
-            "Expires": "0",
-        },
-    )
+    return JSONResponse(MANIFEST, headers=NO_CACHE_HEADERS)
 
 
 @app.get("/catalog/{media_type}/{catalog_id}.json")
 async def catalog(media_type: str, catalog_id: str):
     try:
         payload = await discover_catalog(media_type, catalog_id, 0, "Popular")
-        return JSONResponse(
-            payload,
-            headers={"Cache-Control": "public, max-age=1800"},
-        )
+        return JSONResponse(payload, headers=CATALOG_HEADERS)
     except httpx.HTTPStatusError as exc:
         raise HTTPException(
             status_code=502,
@@ -1393,7 +1973,7 @@ async def catalog_with_extra(
     extra_args: str,
 ):
     try:
-        skip, sort_mode = parse_extra(extra_args)
+        skip, selection = parse_extra(extra_args)
         query = parse_search(extra_args)
         if query:
             payload = await search_catalog(media_type, catalog_id, query, skip)
@@ -1402,12 +1982,9 @@ async def catalog_with_extra(
                 media_type,
                 catalog_id,
                 skip,
-                sort_mode,
+                selection,
             )
-        return JSONResponse(
-            payload,
-            headers={"Cache-Control": "public, max-age=1800"},
-        )
+        return JSONResponse(payload, headers=CATALOG_HEADERS)
     except httpx.HTTPStatusError as exc:
         raise HTTPException(
             status_code=502,
@@ -1419,16 +1996,12 @@ async def catalog_with_extra(
 async def meta(media_type: str, item_id: str):
     try:
         payload = await metadata_proxy(media_type, item_id)
-        return JSONResponse(
-            payload,
-            headers={"Cache-Control": "public, max-age=1800"},
-        )
+        return JSONResponse(payload, headers=CATALOG_HEADERS)
     except httpx.HTTPStatusError as exc:
         raise HTTPException(
             status_code=502,
             detail=f"Upstream metadata error: {exc.response.status_code}",
         ) from exc
-
 
 
 @app.get("/v140/catalog/{media_type}/{catalog_id}.json")
@@ -1450,21 +2023,64 @@ async def meta_v140(media_type: str, item_id: str):
     return await meta(media_type, item_id)
 
 
+# Configured installs: /{config}/... where {config} is AddonConfig.encode().
+# Registered after the /v140/... routes so those literal prefixes still win.
+@app.get("/{config}/configure", response_class=HTMLResponse)
+async def configure_existing(config: str):
+    return render_configure_page(config_from_segment(config))
+
+
+@app.get("/{config}/manifest.json")
+async def manifest_configured(config: str):
+    return JSONResponse(build_manifest(config_from_segment(config)), headers=NO_CACHE_HEADERS)
+
+
+@app.get("/{config}/catalog/{media_type}/{catalog_id}.json")
+async def catalog_configured(config: str, media_type: str, catalog_id: str):
+    parsed = config_from_segment(config)
+    if catalog_id not in parsed.catalogs:
+        return JSONResponse({"metas": []}, headers=CATALOG_HEADERS)
+    return await call_with_config(parsed, catalog, media_type, catalog_id)
+
+
+@app.get("/{config}/catalog/{media_type}/{catalog_id}/{extra_args}.json")
+async def catalog_with_extra_configured(
+    config: str,
+    media_type: str,
+    catalog_id: str,
+    extra_args: str,
+):
+    parsed = config_from_segment(config)
+    if catalog_id not in parsed.catalogs:
+        return JSONResponse({"metas": []}, headers=CATALOG_HEADERS)
+    return await call_with_config(
+        parsed, catalog_with_extra, media_type, catalog_id, extra_args
+    )
+
+
+@app.get("/{config}/meta/{media_type}/{item_id}.json")
+async def meta_configured(config: str, media_type: str, item_id: str):
+    return await call_with_config(config_from_segment(config), meta, media_type, item_id)
+
+
 @app.get("/health")
 async def health():
     return {
         "status": "ok",
         "tmdbConfigured": bool(TMDB_API_TOKEN or TMDB_API_KEY),
+        "sharedCache": bool(REDIS_URL and REDIS_TOKEN),
         "version": APP_VERSION,
         "features": [
-            "CN/HK Chinese metadata",
+            "CN/HK/TW Chinese metadata",
             "native-name credit aliases",
-            "localized TV episodes",
-            "Popular/Latest/Top Rated",
+            "localized TV episodes (up to 60 seasons)",
+            "Popular/Latest/Top Rated + genre filter",
             "custom meta IDs with IMDb stream IDs",
             "tmdb: stream IDs for titles without IMDb",
             "Chinese title search",
-            "Chinese title logos",
+            "Chinese title logos, posters and trailers",
+            "per-install settings (script, catalogs, TMDB key)",
+            "optional shared Redis cache",
         ],
         "sortOptions": SORT_OPTIONS,
         "catalogs": [cfg["name"] for cfg in CATALOGS.values()],

@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 
 class SeriesEpisodeMetadataTests(unittest.IsolatedAsyncioTestCase):
-    def test_manifest_and_install_page_expose_one_stable_four_catalog_addon(self):
+    def test_manifest_and_install_page_expose_one_stable_eight_catalog_addon(self):
         with TestClient(app.app) as client:
             manifest_response = client.get("/manifest.json")
             install_response = client.get("/")
@@ -16,12 +16,21 @@ class SeriesEpisodeMetadataTests(unittest.IsolatedAsyncioTestCase):
         catalog_ids = {catalog["id"] for catalog in manifest["catalogs"]}
         # Same ID as the deployed addon so existing installs update in place.
         self.assertEqual(manifest["id"], "com.twin.chinese-hk-catalog.v141")
-        self.assertEqual(manifest["version"], "1.5.0")
-        self.assertEqual(len(manifest["catalogs"]), 4)
-        self.assertEqual(catalog_ids, {"cn_movies", "hk_movies", "cn_series", "hk_series"})
-        self.assertIn('href="stremio://testserver/manifest.json"', install_response.text)
-        self.assertIn("http://testserver/manifest.json", install_response.text)
-        self.assertEqual(health_response.json()["version"], "1.5.0")
+        self.assertEqual(manifest["version"], "1.6.0")
+        self.assertEqual(len(manifest["catalogs"]), 8)
+        self.assertEqual(
+            catalog_ids,
+            {
+                "cn_movies", "hk_movies", "tw_movies",
+                "cn_series", "hk_series", "tw_series",
+                "cn_donghua", "cn_variety",
+            },
+        )
+        self.assertTrue(manifest["behaviorHints"]["configurable"])
+        # New installs go through /configure; the root manifest is not advertised.
+        self.assertIn('href="/configure"', install_response.text)
+        self.assertNotIn('href="stremio://testserver/manifest.json"', install_response.text)
+        self.assertEqual(health_response.json()["version"], "1.6.0")
 
     async def test_hong_kong_metadata_uses_traditional_chinese_fallback_when_present(self):
         english = {
@@ -81,10 +90,11 @@ class SeriesEpisodeMetadataTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(ValueError):
                     app.make_episode_id("tt7654321", season, episode)
 
-    def test_season_list_ignores_specials_and_caps_at_twenty(self):
-        details = {"seasons": [{"season_number": number} for number in range(26)]}
+    def test_season_list_ignores_specials_and_caps_at_sixty(self):
+        details = {"seasons": [{"season_number": number} for number in range(66)]}
 
-        self.assertEqual(app.season_numbers_from_details(details), list(range(1, 21)))
+        self.assertEqual(app.MAX_SEASONS, 60)
+        self.assertEqual(app.season_numbers_from_details(details), list(range(1, 61)))
         self.assertEqual(
             app.season_numbers_from_details(
                 {"seasons": [{"season_number": 0}], "number_of_seasons": 3}
@@ -172,7 +182,10 @@ class SeriesEpisodeMetadataTests(unittest.IsolatedAsyncioTestCase):
             ]
         }
 
-        with patch.object(app, "get_season_details", side_effect=fetch_season):
+        with (
+            patch.object(app, "get_season_details", side_effect=fetch_season),
+            patch.object(app, "prefetch_seasons", new=AsyncMock()),
+        ):
             await app.localize_series_episodes(
                 meta,
                 12345,
@@ -503,11 +516,16 @@ class TmdbOnlyTitleTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SearchTests(unittest.IsolatedAsyncioTestCase):
-    def test_manifest_catalogs_accept_optional_search(self):
+    def test_country_catalogs_accept_optional_search(self):
+        # Genre rows (donghua, variety) are subsets of cn_series: no search there.
+        genre_rows = {"cn_donghua", "cn_variety"}
         for catalog in app.MANIFEST["catalogs"]:
             with self.subTest(catalog=catalog["id"]):
                 search = [e for e in catalog["extra"] if e["name"] == "search"]
-                self.assertEqual(search, [{"name": "search", "isRequired": False}])
+                expected = [] if catalog["id"] in genre_rows else [
+                    {"name": "search", "isRequired": False}
+                ]
+                self.assertEqual(search, expected)
 
     def test_parse_search(self):
         self.assertEqual(app.parse_search("search=%E4%BB%99%E9%80%86.json"), "仙逆")
@@ -625,8 +643,9 @@ class ChineseLogoTests(unittest.IsolatedAsyncioTestCase):
             await app.get_details("tv", 9, "zh-CN", True)
 
         params = tmdb_get.call_args.args[1]
-        self.assertEqual(params["append_to_response"], "aggregate_credits,images")
+        self.assertEqual(params["append_to_response"], "aggregate_credits,images,videos")
         self.assertEqual(params["include_image_language"], "zh")
+        self.assertEqual(params["include_video_language"], "zh")
 
 if __name__ == "__main__":
     unittest.main()
