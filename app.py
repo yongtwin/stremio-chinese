@@ -679,13 +679,26 @@ def overlay_localized_links(
     writers: list[str],
     genres: list[str],
 ) -> list[dict[str, Any]]:
-    replaced_categories = {"actor", "director", "writer", "genre"}
+    # Cinemeta uses "Cast", "Directors", "Writers", "Genres"; ours are singular.
+    # Drop an inherited English group only when we have a localized replacement.
+    category_groups = {
+        "actor": ({"actor", "actors", "cast"}, cast),
+        "director": ({"director", "directors"}, directors),
+        "writer": ({"writer", "writers"}, writers),
+        "genre": ({"genre", "genres"}, genres),
+    }
+    replaced_categories = {
+        alias
+        for aliases, values in category_groups.values()
+        if values
+        for alias in aliases
+    }
 
     links: list[dict[str, Any]] = [
         link
         for link in (existing_links or [])
         if isinstance(link, dict)
-        and str(link.get("category") or "").lower() not in replaced_categories
+        and str(link.get("category") or "").strip().lower() not in replaced_categories
     ]
 
     links.extend(search_link(name, "actor") for name in cast)
@@ -999,7 +1012,7 @@ async def metadata_proxy(media_type: str, item_id: str) -> dict[str, Any]:
         return {"meta": None}
 
     tmdb_id, imdb_id = parsed
-    cache_key = f"meta-custom:{media_type}:{item_id}:v142"
+    cache_key = f"meta-custom:{media_type}:{item_id}:v143"
     cached = cache.get(cache_key)
     if cached is not None:
         return cached

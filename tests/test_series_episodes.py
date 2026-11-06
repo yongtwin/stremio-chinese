@@ -358,6 +358,36 @@ class StremioClientCompatibilityTests(unittest.IsolatedAsyncioTestCase):
             [stremio_core_video_errors(v) for v in response["meta"]["videos"]], [[]]
         )
 
+    def test_localized_links_replace_cinemeta_english_categories(self):
+        cinemeta_links = [
+            {"name": "8.5", "category": "imdb", "url": "https://imdb.com/title/tt1"},
+            {"name": "Show", "category": "share", "url": "https://www.strem.io/s/x"},
+            {"name": "Animation", "category": "Genres", "url": "stremio:///discover/x"},
+            {"name": "Zekun Shi", "category": "Cast", "url": "stremio:///search?search=Z"},
+            {"name": "Er Gen", "category": "Writers", "url": "stremio:///search?search=E"},
+            {"name": "Someone", "category": "Directors", "url": "stremio:///search?search=S"},
+        ]
+
+        links = app.overlay_localized_links(
+            cinemeta_links, ["史泽鲲"], ["石头熊"], [], ["动画"]
+        )
+        by_category: dict[str, list[str]] = {}
+        for link in links:
+            by_category.setdefault(link["category"], []).append(link["name"])
+
+        self.assertEqual(
+            by_category,
+            {
+                "imdb": ["8.5"],
+                "share": ["Show"],
+                # No localized writers: keep Cinemeta's rather than show none.
+                "Writers": ["Er Gen"],
+                "actor": ["史泽鲲"],
+                "director": ["石头熊"],
+                "genre": ["动画"],
+            },
+        )
+
     def test_normalize_video_aliases(self):
         self.assertEqual(
             app.normalize_video_aliases({"id": "x", "name": "N", "stream": {"url": "u"}}),
