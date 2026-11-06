@@ -1,321 +1,278 @@
-# Chinese & HK Catalog for Stremio — v1.6.1
+# Chinese & HK Catalog for Stremio
 
-## Support
+[![Version](https://img.shields.io/badge/version-1.6.1-5b45ff)](#changelog)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-support-13c3ff?logo=ko-fi&logoColor=white)](https://ko-fi.com/yongtwinchin)
 
-This addon is free and has no ads. If it's useful to you, you can help cover the server and
-development costs: [☕ ko-fi.com/twin_chan](https://ko-fi.com/twin_chan).
+A [Stremio](https://www.stremio.com/) addon that adds China, Hong Kong and Taiwan movie and TV
+catalogs with **Chinese metadata**: titles, descriptions, cast, genres, posters, logos, trailers
+and episode names. Everything else in Stremio stays as it is.
 
-v1.6.1 adds that link to the home page, the `/configure` page and the manifest description
-(which Stremio shows in its install dialog). It is a plain link: no widget, no third-party
-script and no tracking.
+Catalogs and metadata only. This addon does **not** provide streams: playback still goes through
+your own stream addons (AIOStreams, TorBox, …), which receive the usual IMDb IDs.
 
-## v1.6.0
+**Hosted instance:** <https://stremio-chinese.vercel.app> · **Self-hosting:** see [Deploy your own](#deploy-your-own).
 
-### New catalog rows (8 in total)
+## ❤️ Support This Project
 
-🇨🇳 中国电影 · 🇭🇰 香港电影 · 🇹🇼 台湾电影 · 🇨🇳 中国电视剧 · 🇭🇰 香港电视剧 ·
-🇹🇼 台湾电视剧 · 🇨🇳 国产动画 (TMDB genre Animation) · 🇨🇳 综艺节目 (Reality or Talk).
+This addon is developed and maintained independently.
 
-Taiwanese titles now get Chinese metadata (zh-TW first, then zh-HK, zh-CN) and show up in
-search. A title that lists several of these countries lands in one row: HK, then CN, then TW.
-国产动画 and 综艺节目 are subsets of 中国电视剧, so they only offer sorting.
+If you find it useful, consider buying me a coffee! Your support helps cover hosting costs, maintenance, and future improvements.
 
-### Genre filter
+☕ **[Support me on Ko-fi](https://ko-fi.com/yongtwinchin)**
 
-The dropdown on each country row now lists Popular / Latest / Top Rated followed by genres
-(悬疑, 喜剧, 科幻…). A genre lists that genre by popularity. Stremio's dropdown holds a
-single value, so a genre and a sort order cannot be combined.
+Thank you for supporting independent open-source development!
 
-### Settings page: `/configure`
+## Contents
 
-New installs go through `https://YOUR-PROJECT.vercel.app/configure`, where you choose:
+- [Features](#features)
+- [Install](#install)
+- [Configuration](#configuration)
+- [Catalogs](#catalogs)
+- [Language behavior](#language-behavior)
+- [How it works](#how-it-works)
+- [Deploy your own](#deploy-your-own)
+- [Development](#development)
+- [Changelog](#changelog)
+- [License and notices](#license-and-notices)
 
-- **TMDB API key (required).** A free v3 API key (32 characters) or a v4 Read Access Token
-  (`eyJ…`) from <https://www.themoviedb.org/settings/api>. The page verifies it with TMDB
-  directly from your browser; it never passes through this server for the check.
-- **Script:** 按地区 (CN simplified, HK/TW traditional, the default), 简体优先 or 繁體優先.
-  It shapes the language of catalog titles, search results and detail pages.
-- **Catalogs:** which of the 8 rows to show.
+## Features
 
-The page then gives you a `stremio://` install link and an https URL. Your settings are
-stored **in that URL's path** (base64url JSON, not encrypted), so the TMDB key is part of
-the install link: keep it private and don't paste it in public places. The server doesn't
-log or cache it. If you reconfigure, install the new link over the old one (same addon ID).
+- **Eight catalog rows:** 🇨🇳 中国电影 · 🇭🇰 香港电影 · 🇹🇼 台湾电影 · 🇨🇳 中国电视剧 · 🇭🇰 香港电视剧 ·
+  🇹🇼 台湾电视剧 · 🇨🇳 国产动画 · 🇨🇳 综艺节目
+- **Sorting and genres:** Popular, Latest, Top Rated, plus a genre list (悬疑, 喜剧, 科幻, …)
+- **Search by Chinese title:** type 仙逆 or 無間道 in Stremio's search bar
+- **Chinese detail pages:** title, overview, genres, cast, directors and writers (native names
+  where TMDB has them), poster, title logo, trailers and per-episode titles
+- **Long series:** up to 60 seasons per title (e.g. 乡村爱情), fetched in bulk
+- **Titles without an IMDb ID** (many mainland dramas and donghua) are included
+- **Per-install settings:** simplified or traditional script, which rows to show, your own TMDB key
+- **Optional shared cache** (Upstash Redis) so cold starts don't refetch everything
 
-Stremio's Configure button on an installed addon reopens the page with your current choices.
-A key TMDB rejects returns a clear error instead of silently using the server's key.
+## Install
 
-Installs from the plain `/manifest.json` (all existing users) keep working unchanged on the
-server's key, and also get the four new rows. That URL just isn't advertised any more.
-
-### Chinese posters and trailers
-
-Detail pages use a Chinese-language poster when TMDB has one, and replace Cinemeta's trailers
-with Chinese YouTube trailers/teasers when TMDB has any (otherwise the previous poster and
-Cinemeta's trailers stay). Both come from the same TMDB request as credits and logos.
-
-### Long series
-
-The per-title limit rose from 20 to 60 seasons (e.g. 乡村爱情). Seasons are fetched in bulk,
-one TMDB request per 20 seasons, instead of one request per season.
-
-### Optional shared cache (Redis)
-
-Vercel instances forget their in-memory cache whenever they restart, so a cold detail page
-refetches everything from TMDB. To persist it:
-
-1. Vercel → your project → **Storage** → create or connect an **Upstash Redis** database.
-2. That sets `KV_REST_API_URL` and `KV_REST_API_TOKEN` (or `UPSTASH_REDIS_REST_URL` /
-   `UPSTASH_REDIS_REST_TOKEN`) in the project.
-3. Redeploy. `/health` then reports `"sharedCache": true`.
-
-Without those variables nothing changes: the addon uses the in-memory cache only. Redis errors
-never fail a request, and entries over 900 KB stay in memory only.
-
-## v1.5.0
-
-### Search by Chinese title
-
-Every catalog now accepts Stremio's `search` extra, so typing 仙逆 or 無間道 in
-Stremio's search bar returns results from this addon (TMDB search, localized
-names). Results are split into the same four rows as the catalogs: a title lands
-in 🇭🇰 if TMDB lists Hong Kong as a country, otherwise 🇨🇳 if it lists China.
-Taiwanese and other titles are not shown.
-
-### Titles without an IMDb ID are no longer hidden
-
-Earlier versions dropped every TMDB title that had no IMDb ID, which hid many
-mainland dramas and donghua. They now appear with:
-
-| | Meta ID | Stream ID sent to stream addons |
-| --- | --- | --- |
-| With IMDb | `tch:series:<tmdb>:tt…` | `tt…` / `tt…:season:episode` |
-| Without IMDb | `tch:series:<tmdb>` | `tmdb:<tmdb>` / `tmdb:<tmdb>:season:episode` |
-
-AIOStreams' built-in debrid/TorBox addons accept `tmdb:` IDs. Stream addons that only
-support IMDb (`tt`) IDs will not return sources for these titles; Stremio simply
-doesn't ask them. Titles keep their existing IDs. If a lookup of the IMDb ID fails
-temporarily, the title is skipped from that catalog page instead of being given a
-second, different ID.
-
-### Chinese title logos
-
-The detail page used Cinemeta's English title art (e.g. "Renegade Immortal"). It
-now uses TMDB's Chinese-language logo when one exists (traditional for HK titles,
-simplified for CN titles), fetched in the same TMDB request as the credits. Without
-a Chinese logo, the English one is removed and Stremio shows the Chinese name.
-
-## v1.4.2: fix "No metadata was found!" on detail pages
-
-Symptom: opening some catalog entries (e.g. 仙逆,
-`#/detail/series/tch%3Aseries%3A223911%3Att27432264`) showed **No metadata was
-found!**, **No videos found for this meta!**, and a bogus Season 0 / Episode
-`<tmdb-id>` selector, even though the meta endpoint returned HTTP 200.
-
-Two independent causes, both reproduced in Stremio Web:
-
-1. **CDN-cached responses without CORS headers.** Starlette's `CORSMiddleware`
-   only adds `Access-Control-Allow-Origin` when the request carries an `Origin`
-   header. Meta/catalog responses are `Cache-Control: public`, so Vercel's CDN
-   cached whichever copy came first. If that was a non-browser request (curl, a
-   native app, a health check), every browser got a CORS-blocked copy for up to
-   30 minutes. This is why it happened "sometimes". Fix: CORS headers are now sent
-   on every response.
-2. **Episode objects with both `title` and `name`.** Stremio Core declares
-   `Video.title` with `#[serde(alias = "name")]`, so a video with both keys fails
-   with a duplicate-field error, and that rejects the whole meta. Cinemeta episodes
-   carry `name`; we added a Chinese `title`. Shows where Cinemeta has an episode
-   list (仙逆, 嫁金钗, 完美世界, 凡人修仙传…) always failed. Shows without one
-   (most HK dramas) worked. Fix: episodes now carry only `title` (with Cinemeta's
-   `name` as the fallback text), and `stream`/`streams` are collapsed the same way.
-
-The `tch:` custom ID format was **not** the problem; it renders fine once the
-two issues above are fixed. Addon ID (`com.twin.chinese-hk-catalog.v141`) and all
-meta/video IDs are unchanged, so saved links and library items keep working.
-
-### Metadata vs. playback sources
-
-This addon supplies only catalogs and metadata. A rendered Chinese detail page with
-an episode list means metadata works. Whether **sources** appear after picking an
-episode depends on your stream addons (AIOStreams/TorBox, etc.) having results for
-the IMDb ID this addon hands them (`tt…` for movies, `tt…:season:episode` for
-episodes). An empty source list on a rendered page is a stream-addon matter.
-
-## v1.4.1
-
-1. Series episodes are generated from TMDB even when Cinemeta has no episode list.
-2. Locale fallbacks are checked when the preferred locale returns non-Chinese text.
-
-## Why detail pages were English before
-
-Earlier versions returned IMDb IDs (`tt...`) as the catalog/meta ID.
-
-Stremio asks all relevant metadata addons for that ID. Cinemeta also owns IMDb IDs,
-and Stremio's MetaDetails model uses the first successfully loaded meta item in addon
-order. That meant Cinemeta could win and display English metadata even though this
-addon also returned Chinese metadata.
-
-## v1.4 architecture
-
-Catalog item IDs now look like:
+Open the settings page and follow it:
 
 ```text
-tch:movie:123456:tt1234567
-tch:series:654321:tt7654321
+https://stremio-chinese.vercel.app/configure
 ```
 
-Only this addon declares the `tch:` meta prefix, so its Chinese detail page is used.
+1. Paste your TMDB API key (see [Configuration](#configuration)).
+2. Choose the script and the catalogs you want.
+3. Click **Generate install link**, then **Install in Stremio** (or paste the https URL into
+   Stremio's addon search box).
 
-Playback remains compatible:
+**Remove older copies first.** Stremio loads catalogs from every installed addon, so if v1.0, v1.3,
+v1.3.1 or v1.3.2 are still installed you will see duplicate 中国电影 / 香港电影 rows. Uninstall every
+older "Chinese & HK Catalog" entry (including the one with ID `com.twin.chinese-hk-catalog.v140`)
+and keep only one.
 
-### Movies
+**Already installed from `/manifest.json`?** It keeps working unchanged on the server's TMDB key,
+and you get the new rows automatically. No reinstall is needed: the addon ID is the same, and Stremio
+refreshes the manifest from the same URL. To see new rows immediately, open the install URL again and
+click Install (or Update). Your library and watch history are kept.
 
-The meta object sets:
+## Configuration
 
-```json
-"behaviorHints": {
-  "defaultVideoId": "tt1234567"
-}
-```
+The settings page (`/configure`) sets three things:
 
-Stremio therefore requests streams using the IMDb ID, so AIOStreams/TorBox still work.
+| Setting | Options |
+| --- | --- |
+| **TMDB API key** (required) | A free v3 API key (32 characters) or a v4 Read Access Token (`eyJ…`) from [themoviedb.org/settings/api](https://www.themoviedb.org/settings/api) |
+| **Script** | 按地区 (default: CN simplified, HK/TW traditional) · 简体中文优先 · 繁體中文優先 |
+| **Catalogs** | Any of the 8 rows |
 
-### Series
+The page checks your key with TMDB directly from your browser, so the check never passes through
+this server. A key that TMDB rejects later returns a clear error; it never silently falls back to the
+server's key.
 
-The meta ID is custom. Episodes are built from TMDB season data, with matching
-Cinemeta fields retained when available. Episode video IDs use the standard IMDb format:
-
-```text
-tt7654321:1:1
-tt7654321:1:2
-```
-
-Season 0 specials are excluded, and no more than 60 seasons are fetched for one detail
-request (20 in versions before 1.6.0). Selecting an episode sends `tt...:season:episode` to stream addons, even when
-Cinemeta has no episode metadata.
+> **Privacy note:** your settings are stored **in the install URL's path** (base64url JSON, not
+> encrypted), so the TMDB key is part of the link. Keep the link private. The server does not log
+> or cache the key. To change settings, generate a new link and install it over the old one, or use
+> the **Configure** button on the installed addon in Stremio, which reopens the page with your
+> current choices.
 
 ## Catalogs
 
-- 🇨🇳 中国电影
-- 🇭🇰 香港电影
-- 🇹🇼 台湾电影
-- 🇨🇳 中国电视剧
-- 🇭🇰 香港电视剧
-- 🇹🇼 台湾电视剧
-- 🇨🇳 国产动画
-- 🇨🇳 综艺节目
+| Row | TMDB source |
+| --- | --- |
+| 🇨🇳 中国电影 / 🇨🇳 中国电视剧 | Origin country CN |
+| 🇭🇰 香港电影 / 🇭🇰 香港电视剧 | Origin country HK |
+| 🇹🇼 台湾电影 / 🇹🇼 台湾电视剧 | Origin country TW |
+| 🇨🇳 国产动画 | CN series, genre Animation |
+| 🇨🇳 综艺节目 | CN series, genre Reality or Talk |
 
-Sorting:
-- Popular
-- Latest
-- Top Rated
+The dropdown on each country row lists **Popular / Latest / Top Rated** followed by genres. A genre
+lists that genre by popularity; Stremio's dropdown holds a single value, so a genre and a sort order
+cannot be combined. 国产动画 and 综艺节目 are subsets of 中国电视剧, so they offer sorting only (no
+genres, no search).
 
-Plus a genre list on the country rows (see v1.6.0).
+A title that lists several of these countries lands in one row: HK first, then CN, then TW. Titles
+from other countries are not shown here, and the rest of Stremio keeps Cinemeta's English metadata.
 
 ## Language behavior
 
-CN:
-- zh-CN title/description
-- Chinese genres
-- Chinese/native cast/director/writer names when TMDB has them
-- Chinese episode metadata when available
+| Title origin | Locale order |
+| --- | --- |
+| CN | zh-CN, then zh-TW, zh-HK |
+| HK | zh-HK, then zh-TW, zh-CN |
+| TW | zh-TW, then zh-HK, zh-CN |
 
-HK:
-- zh-HK first
-- zh-TW then zh-CN fallback
-- Chinese/native cast/director/writer names when TMDB has them
-- Chinese episode metadata when available
+The script setting overrides this: **简体优先** puts zh-CN first for every title; **繁體優先** puts
+zh-HK (HK titles) or zh-TW (everything else) first. Cast, director and writer names use the native
+Chinese name when TMDB has one.
 
-TW:
-- zh-TW first
-- zh-HK then zh-CN fallback
+## How it works
 
-The `/configure` script setting overrides these: 简体优先 puts zh-CN first for every
-title, 繁體優先 puts zh-HK (HK titles) or zh-TW (everything else) first.
+### Custom meta IDs
 
-Other normal Stremio catalogs:
-- unchanged
-- Cinemeta remains English
+Catalog items use addon-specific IDs so Cinemeta cannot win the detail-page selection for the same
+IMDb ID (Stremio uses the first meta provider that loads):
 
-## Install URL
+| | Meta ID | ID sent to stream addons |
+| --- | --- | --- |
+| With IMDb | `tch:series:<tmdb>:tt…` | `tt…` (episodes: `tt…:season:episode`) |
+| Without IMDb | `tch:series:<tmdb>` | `tmdb:<tmdb>` (episodes: `tmdb:<tmdb>:season:episode`) |
 
-After deploying, open the settings page and follow it (see v1.6.0):
+Movies set `behaviorHints.defaultVideoId` to the IMDb (or `tmdb:`) ID, so AIOStreams/TorBox work as
+before. AIOStreams' built-in debrid/TorBox addons accept `tmdb:` IDs; stream addons that only support
+IMDb IDs return nothing for those titles, and Stremio simply doesn't ask them. If a lookup of the IMDb
+ID fails temporarily, the title is skipped from that catalog page instead of getting a second,
+different ID.
 
-```text
-https://YOUR-PROJECT.vercel.app/configure
-```
+### Series episodes
 
-The root `https://YOUR-PROJECT.vercel.app/manifest.json` and the legacy `/v140/` routes remain
-available for existing installs. They use the server's `TMDB_API_TOKEN` and the default settings.
+Episodes are built from TMDB season data, keeping matching Cinemeta fields when available. Season 0
+specials are excluded, and at most 60 seasons are fetched per title (one TMDB request per 20 seasons).
 
-## VERY IMPORTANT: remove older copies
+### Posters, logos and trailers
 
-Stremio loads catalogs from every installed addon. If v1.0, v1.3, v1.3.1 or v1.3.2
-are still installed, you will see duplicate 中国电影 / 香港电影 rows.
+All of these come from the same TMDB request as the credits. A Chinese-language poster and title logo
+replace the defaults when TMDB has them (otherwise the English logo is dropped so Stremio shows the
+Chinese name). Chinese YouTube trailers and teasers replace Cinemeta's when TMDB has any.
 
-Uninstall every older "Chinese & HK Catalog" entry and keep only:
+### Metadata vs. playback sources
 
-```text
-Chinese & HK Catalog v1.6.1
-```
+A rendered Chinese detail page with an episode list means metadata works. Whether **sources** appear
+after picking an episode depends on your stream addons having results for the ID this addon hands them.
+An empty source list on a rendered page is a stream-addon matter.
 
-Upgrading from any v1.4.x or v1.5.x needs no reinstall: the addon ID is the same and Stremio
-refreshes the manifest from the same URL. If an old copy with ID
-`com.twin.chinese-hk-catalog.v140` is installed, uninstall it.
+## Deploy your own
 
-New rows, the genre list and search are declared in the manifest, so they appear once
-Stremio refreshes its stored copy. To get them immediately, open the install URL
-again and click Install (or Update); library and watch history are kept.
+The app is a single FastAPI file (`app.py`) that runs on Vercel.
 
-## Update on Vercel
+1. Fork or clone this repository and import it in Vercel.
+2. Set an environment variable (see [`.env.example`](.env.example)):
+   - `TMDB_API_TOKEN` (recommended, a v4 Read Access Token), or
+   - `TMDB_API_KEY` (a classic v3 key).
 
-1. Replace your GitHub repo files with this version.
-2. Commit/push.
-3. Vercel redeploys automatically.
-4. Your existing `TMDB_API_TOKEN` remains unchanged.
-5. Verify:
+   This is the fallback key for installs made from the plain `/manifest.json`. Installs made on
+   `/configure` use their own key.
+3. Deploy. Pushes to `main` redeploy automatically.
+4. Verify:
 
-```text
-https://YOUR-PROJECT.vercel.app/health
-```
+   ```text
+   https://YOUR-PROJECT.vercel.app/health
+   https://YOUR-PROJECT.vercel.app/manifest.json
+   ```
 
-should show:
+   `/health` should report the current `version`; the manifest keeps the ID
+   `com.twin.chinese-hk-catalog.v141`.
 
-```json
-"version": "1.6.1"
-```
+### Optional: shared cache (Redis)
 
-Then verify:
+Vercel instances forget their in-memory cache whenever they restart, so a cold detail page refetches
+everything from TMDB. To persist it:
 
-```text
-https://YOUR-PROJECT.vercel.app/manifest.json
-```
+1. In Vercel, open your project → **Storage** → create or connect an **Upstash Redis** database.
+2. That sets `KV_REST_API_URL` and `KV_REST_API_TOKEN` (or `UPSTASH_REDIS_REST_URL` and
+   `UPSTASH_REDIS_REST_TOKEN`) in the project.
+3. Redeploy. `/health` then reports `"sharedCache": true`.
 
-shows:
+Without those variables the addon uses its in-memory cache only. Redis errors never fail a request,
+and entries over 900 KB stay in memory only.
 
-```json
-"id": "com.twin.chinese-hk-catalog.v141",
-"version": "1.6.1"
-```
+### CORS and CDN caching
 
-Deploying purges Vercel's CDN cache, which also clears any CORS-less copies cached
-before v1.4.2. To confirm the CORS fix, request a meta URL **without** an Origin
-header and check that `access-control-allow-origin: *` is still present:
+Meta and catalog responses are `Cache-Control: public`, and the CDN caches whichever copy it sees
+first. CORS headers are therefore sent on **every** response, not only when an `Origin` header is
+present. To confirm after a deploy, request a meta URL without an Origin header and look for
+`access-control-allow-origin: *`:
 
 ```bash
-curl -sI "https://YOUR-PROJECT.vercel.app/meta/series/tch%3Aseries%3A223911%3Att27432264.json"
+curl -s -D - -o /dev/null "https://YOUR-PROJECT.vercel.app/meta/series/tch%3Aseries%3A223911%3Att27432264.json"
 ```
 
-## Tests
+## Development
 
 ```bash
 pip install -r requirements.txt
 python -m unittest discover -s tests -v
 ```
 
-`StremioClientCompatibilityTests` mirrors Stremio Core's `Video` deserialization
-rules and the CORS-without-Origin case.
+`StremioClientCompatibilityTests` mirrors Stremio Core's `Video` deserialization rules and the
+CORS-without-Origin case. To run the addon locally, set a TMDB key and start it with
+`uvicorn app:app --port 8000`.
 
-## TMDB notice
+## Changelog
+
+### 1.6.1
+
+- Ko-fi support link on the home page, the `/configure` page and the manifest description (which
+  Stremio shows in its install dialog). A plain link: no widget, no third-party script, no tracking.
+
+### 1.6.0
+
+- **Four new rows:** 台湾电影, 台湾电视剧, 国产动画 and 综艺节目 (8 rows in total). Taiwanese titles get
+  Chinese metadata and appear in search.
+- **Genre filter** in each country row's dropdown.
+- **`/configure` page:** script preference, catalog selection and a required per-install TMDB key.
+  Installs from the plain `/manifest.json` keep working on the server's key.
+- **Chinese posters and trailers** on detail pages.
+- **Season limit** raised from 20 to 60, fetched in bulk.
+- **Optional Redis cache** (see [Deploy your own](#deploy-your-own)).
+
+### 1.5.0
+
+- **Search by Chinese title** on every catalog row. A title lands in 🇭🇰 if TMDB lists Hong Kong,
+  otherwise 🇨🇳 if it lists China (Taiwan joined in 1.6.0).
+- **Titles without an IMDb ID** are no longer hidden. They use `tch:<type>:<tmdb>` meta IDs and
+  `tmdb:<id>` stream IDs.
+- **Chinese title logos** replace Cinemeta's English title art.
+
+### 1.4.2 — fix "No metadata was found!"
+
+Opening some entries (e.g. 仙逆, `#/detail/series/tch%3Aseries%3A223911%3Att27432264`) showed **No
+metadata was found!** and a bogus Season 0 selector even though the meta endpoint returned HTTP 200.
+Two independent causes, both reproduced in Stremio Web:
+
+1. **CDN-cached responses without CORS headers.** Starlette's `CORSMiddleware` only adds
+   `Access-Control-Allow-Origin` when the request carries an `Origin` header. Vercel's CDN cached
+   whichever copy came first, so a first request from curl or a health check left every browser with a
+   CORS-blocked copy for up to 30 minutes. Fix: CORS headers on every response.
+2. **Episode objects with both `title` and `name`.** Stremio Core declares `Video.title` with
+   `#[serde(alias = "name")]`, so a video carrying both keys fails with a duplicate-field error and
+   rejects the whole meta. Cinemeta episodes carry `name`; we had added a Chinese `title`. Fix:
+   episodes carry only `title` (with Cinemeta's `name` as fallback text), and `stream`/`streams` are
+   collapsed the same way.
+
+The `tch:` ID format was not the problem. The addon ID and all meta/video IDs are unchanged, so saved
+links and library items keep working.
+
+### 1.4.1
+
+- Series episodes are generated from TMDB even when Cinemeta has no episode list.
+- Locale fallbacks are checked when the preferred locale returns non-Chinese text.
+
+### 1.4.0 — why detail pages used to be English
+
+Earlier versions used IMDb IDs (`tt…`) as the catalog/meta ID. Stremio asks every relevant meta addon
+for that ID, and Cinemeta also owns IMDb IDs. Stremio's detail view uses the first meta that loads in
+addon order, so Cinemeta could win and show English metadata even though this addon also returned
+Chinese. 1.4 introduced the `tch:` meta IDs described under [How it works](#how-it-works).
+
+## License and notices
+
+Released under the [MIT License](LICENSE).
 
 This product uses the TMDB API but is not endorsed or certified by TMDB.
