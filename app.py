@@ -15,8 +15,8 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
-APP_NAME = "Chinese & HK Catalog v1.6.4"
-APP_VERSION = "1.6.4"
+APP_NAME = "Chinese & HK Catalog v1.6.5"
+APP_VERSION = "1.6.5"
 # Plain link only: no widget script, so the pages stay fast and nothing is tracked.
 SUPPORT_URL = "https://ko-fi.com/twin_chan"
 
@@ -30,7 +30,10 @@ TMDB_BASE = "https://api.themoviedb.org/3"
 TMDB_IMAGE = "https://image.tmdb.org/t/p"
 CINEMETA_BASE = "https://v3-cinemeta.strem.io"
 
-SORT_OPTIONS = ["Popular", "Latest", "Top Rated"]
+SORT_OPTIONS = ["Latest", "Popular", "Top Rated"]
+# What a request gets when it names no sort: Stremio's Board rows and Discover's untouched
+# view both ask for the bare catalog URL, so this is the home-screen order.
+DEFAULT_SORT = "Latest"
 
 # TMDB genre IDs are stable; labels are what Stremio shows in the dropdown.
 # Picking a genre lists that genre by popularity (the dropdown holds one value).
@@ -201,15 +204,17 @@ COMBO_SEP = " · "  # "喜剧 · Latest": a genre plus a sort order in one genre
 def genre_options(cfg: dict[str, Any]) -> list[str]:
     """
     Entries of the `genre` dropdown: the sort orders (as before 1.6.2), then each genre
-    followed by its Latest / Top Rated variants. Rows that fix their own genre list the
-    sort orders only. This lets mobile apps, which only show `genre`, filter and sort.
+    followed by its variants for the sort orders other than the default. A bare genre
+    already gets the default sort, so "喜剧" is newest comedies, "喜剧 · Popular" the
+    popular ones. Rows that fix their own genre list the sort orders only. This lets
+    mobile apps, which only show `genre`, filter and sort.
     """
     options = list(SORT_OPTIONS)
     if not cfg.get("with_genres"):
-        ranked = [name for name in SORT_OPTIONS if name != "Popular"]
+        others = [name for name in SORT_OPTIONS if name != DEFAULT_SORT]
         for label in genre_map(cfg["tmdb_type"]):
             options.append(label)
-            options.extend(f"{label}{COMBO_SEP}{name}" for name in ranked)
+            options.extend(f"{label}{COMBO_SEP}{name}" for name in others)
     return options
 
 
@@ -495,10 +500,10 @@ def parse_extra(extra_args: str | None) -> tuple[int, str, str | None]:
     genre, genre_sort = parse_genre_value(values.get("genre"))
 
     # An explicit `sort` (Stremio Web's Sort dropdown) wins; otherwise use the sort carried
-    # by the genre entry ("Latest", or "喜剧 · Latest"), otherwise Popular.
+    # by the genre entry ("Popular", or "喜剧 · Popular"), otherwise the default (Latest).
     sort = values.get("sort")
     if sort not in SORT_OPTIONS:
-        sort = genre_sort or "Popular"
+        sort = genre_sort or DEFAULT_SORT
 
     return skip, sort, genre
 
@@ -714,7 +719,7 @@ async def discover_catalog(
     media_type: str,
     catalog_id: str,
     skip: int,
-    sort: str = "Popular",
+    sort: str = DEFAULT_SORT,
     genre: str | None = None,
 ) -> dict[str, Any]:
     cfg = CATALOGS.get((media_type, catalog_id))
@@ -723,7 +728,7 @@ async def discover_catalog(
         return {"metas": []}
 
     if sort not in SORT_OPTIONS:
-        sort = "Popular"
+        sort = DEFAULT_SORT
     genre = effective_genre(cfg, genre)
     language = catalog_language(cfg)
 
@@ -1810,7 +1815,7 @@ async def home(request: Request):
 <body>
   <h1>{APP_NAME}</h1>
   <p>{rows}</p>
-  <p>Popular · Latest · Top Rated · 按类型筛选 · 中文搜索</p>
+  <p>默认按最新发布排序 · Latest · Popular · Top Rated · 按类型筛选 · 中文搜索</p>
   <p>CN/HK/TW: 中文详情、海报、预告片由本 addon 独立提供；播放仍使用 IMDb ID 交给 AIOStreams/TorBox。</p>
   <p>其他国家：保留 Cinemeta English metadata。</p>
   <p>{status}</p>
@@ -2022,7 +2027,7 @@ async def manifest_v140():
 @app.get("/catalog/{media_type}/{catalog_id}.json")
 async def catalog(media_type: str, catalog_id: str):
     try:
-        payload = await discover_catalog(media_type, catalog_id, 0, "Popular")
+        payload = await discover_catalog(media_type, catalog_id, 0, DEFAULT_SORT)
         return JSONResponse(payload, headers=CATALOG_HEADERS)
     except httpx.HTTPStatusError as exc:
         raise HTTPException(
@@ -2136,7 +2141,7 @@ async def health():
             "CN/HK/TW Chinese metadata",
             "native-name credit aliases",
             "localized TV episodes (up to 60 seasons)",
-            "Popular/Latest/Top Rated + genre filter",
+            "Latest (default)/Popular/Top Rated + genre filter",
             "custom meta IDs with IMDb stream IDs",
             "tmdb: stream IDs for titles without IMDb",
             "Chinese title search",

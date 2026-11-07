@@ -16,7 +16,7 @@ class SeriesEpisodeMetadataTests(unittest.IsolatedAsyncioTestCase):
         catalog_ids = {catalog["id"] for catalog in manifest["catalogs"]}
         # Same ID as the deployed addon so existing installs update in place.
         self.assertEqual(manifest["id"], "com.twin.chinese-hk-catalog.v141")
-        self.assertEqual(manifest["version"], "1.6.4")
+        self.assertEqual(manifest["version"], "1.6.5")
         self.assertEqual(len(manifest["catalogs"]), 8)
         self.assertEqual(
             catalog_ids,
@@ -30,7 +30,7 @@ class SeriesEpisodeMetadataTests(unittest.IsolatedAsyncioTestCase):
         # New installs go through /configure; the root manifest is not advertised.
         self.assertIn('href="/configure"', install_response.text)
         self.assertNotIn('href="stremio://testserver/manifest.json"', install_response.text)
-        self.assertEqual(health_response.json()["version"], "1.6.4")
+        self.assertEqual(health_response.json()["version"], "1.6.5")
 
     async def test_hong_kong_metadata_uses_traditional_chinese_fallback_when_present(self):
         english = {
@@ -103,7 +103,7 @@ class SeriesEpisodeMetadataTests(unittest.IsolatedAsyncioTestCase):
         )
 
     def test_catalog_sort_extras_map_to_tmdb_ordering(self):
-        self.assertEqual(app.parse_extra(None), (0, "Popular", None))
+        self.assertEqual(app.parse_extra(None), (0, "Latest", None))  # Latest is the default
         self.assertEqual(app.parse_extra("sort=Top%20Rated&skip=40.json"), (40, "Top Rated", None))
 
         popular = app.discover_sort_params("movie", "Popular")
@@ -532,7 +532,7 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(app.parse_search("search=仙逆.json"), "仙逆")
         self.assertEqual(app.parse_search("search=  a   b &skip=20.json"), "a b")
         self.assertEqual(app.parse_search("genre=Latest.json"), "")
-        self.assertEqual(app.parse_extra("search=x&skip=20.json"), (20, "Popular", None))
+        self.assertEqual(app.parse_extra("search=x&skip=20.json"), (20, "Latest", None))
 
     async def test_search_splits_results_into_cn_and_hk_catalogs(self):
         results = [

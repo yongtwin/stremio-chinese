@@ -1,6 +1,6 @@
 # Chinese & HK Catalog for Stremio
 
-[![Version](https://img.shields.io/badge/version-1.6.4-5b45ff)](#changelog)
+[![Version](https://img.shields.io/badge/version-1.6.5-5b45ff)](#changelog)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-support-13c3ff?logo=ko-fi&logoColor=white)](https://ko-fi.com/twin_chan)
 
@@ -105,7 +105,7 @@ server's key.
 Each country row has two separate dropdowns in Stremio's Discover page, which keep their choices
 independently so you can combine them:
 
-- **Sort:** Popular (default), Latest or Top Rated. Top Rated only counts titles with at least 50 votes,
+- **Sort:** Latest (default), Popular or Top Rated. Top Rated only counts titles with at least 50 votes,
   so a narrow combination (e.g. 香港电影 → 恐怖 → Top Rated) can return few titles.
 - **Genre:** 悬疑, 喜剧, 科幻, … (the list differs for movies and series). Leave it empty for all genres.
 
@@ -117,15 +117,21 @@ Genre is under the filter button**. Narrow browser windows put the filters in a 
 holds the sort orders and "genre · sort" entries:
 
 ```text
-Popular · Latest · Top Rated · 剧情 · 剧情 · Latest · 剧情 · Top Rated · 喜剧 · 喜剧 · Latest · …
+Latest · Popular · Top Rated · 剧情 · 剧情 · Popular · 剧情 · Top Rated · 喜剧 · 喜剧 · Popular · …
 ```
 
-Pick `喜剧 · Latest` for comedies newest first, or `Latest` alone for all genres. On Stremio Web the
-same entries appear in the Genre list too, which is redundant next to the Sort dropdown; when Sort is
-set it wins over the sort inside a Genre entry. 国产动画 and 综艺节目 list the three sort orders only.
+A bare genre already gets the default sort, so `喜剧` is the newest comedies. Pick `喜剧 · Popular` for
+the popular ones, or `Popular` alone for all genres. On Stremio Web the same entries appear in the Genre
+list too, which is redundant next to the Sort dropdown; when Sort is set it wins over the sort inside a
+Genre entry.
 
-国产动画 and 综艺节目 are subsets of 中国电视剧, so they offer the Sort dropdown only (no genre, no
-search).
+国产动画 and 综艺节目 are subsets of 中国电视剧, so they offer sorting only (their Genre list holds just
+the three sort orders, for mobile) and no search.
+
+**Default order:** with no sort chosen, every row lists the **newest releases first** (nothing
+unreleased). That is what Stremio's Board (home screen) shows for each row, because Board asks for the
+bare catalog URL, and it is also what Discover shows before you pick a sort. Pick Popular or Top Rated to
+change it.
 
 A title that lists several of these countries lands in one row: HK first, then CN, then TW. Titles
 from other countries are not shown here, and the rest of Stremio keeps Cinemeta's English metadata.
@@ -236,11 +242,19 @@ CORS-without-Origin case. To run the addon locally, set a TMDB key and start it 
 
 ## Changelog
 
+### 1.6.5
+
+- **Newest releases first by default.** A request with no sort chosen now returns Latest instead of
+  Popular. This is the home-screen order: Stremio's Board rows, and Discover before you pick a sort.
+  Popular and Top Rated are one pick away (Sort on Web; `Popular` / `genre · Popular` in the Genre list on
+  mobile). The Sort dropdown lists Latest first. The mobile Genre list swaps its "genre · Latest" entries
+  for "genre · Popular", since a bare genre is now latest; older "genre · Latest" links still work.
+
 ### 1.6.4
 
 - **Genre + sort on the mobile apps.** They only show a filter named `genre`, so 1.6.2/1.6.3's separate
   Sort dropdown was invisible there and mobile lost sorting. The Genre list now also carries `Popular`,
-  `Latest`, `Top Rated` and "genre · Latest" / "genre · Top Rated" entries for every genre (45 per row).
+  `Latest`, `Top Rated` and "genre · Latest" / "genre · Top Rated" entries for every genre (45 entries on movie rows, 39 on series rows).
   Stremio Web keeps its separate Sort dropdown. An explicit Sort wins over a sort inside a Genre entry.
   国产动画 and 综艺节目 get a Genre list of the sort orders only.
 

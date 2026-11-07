@@ -58,12 +58,12 @@ class TaiwanTests(unittest.IsolatedAsyncioTestCase):
 class GenreTests(unittest.IsolatedAsyncioTestCase):
     def test_parse_extra_returns_skip_sort_and_genre(self):
         parse = app.parse_extra
-        self.assertEqual(parse("genre=%E6%82%AC%E7%96%91.json"), (0, "Popular", "悬疑"))
+        self.assertEqual(parse("genre=%E6%82%AC%E7%96%91.json"), (0, "Latest", "悬疑"))
         self.assertEqual(parse("sort=Latest&skip=20.json"), (20, "Latest", None))
         self.assertEqual(
             parse("genre=%E5%96%9C%E5%89%A7&sort=Latest.json"), (0, "Latest", "喜剧")
         )
-        self.assertEqual(parse("genre=Nonsense&sort=Nonsense.json"), (0, "Popular", None))
+        self.assertEqual(parse("genre=Nonsense&sort=Nonsense.json"), (0, "Latest", None))
 
     def test_old_style_genre_holding_a_sort_name_is_treated_as_the_sort(self):
         # Clients on the pre-1.6.2 manifest, or old deep links, send e.g. genre=Latest.
@@ -196,15 +196,17 @@ class MobileGenreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(options[:3], app.SORT_OPTIONS)
         self.assertEqual(
             options[3:9],
-            ["剧情", "剧情 · Latest", "剧情 · Top Rated", "喜剧", "喜剧 · Latest", "喜剧 · Top Rated"],
+            ["剧情", "剧情 · Popular", "剧情 · Top Rated", "喜剧", "喜剧 · Popular", "喜剧 · Top Rated"],
         )
-        # 3 sort orders + 14 movie genres x (plain, Latest, Top Rated)
+        # No "· Latest" variants: a bare genre already gets the default sort, Latest.
+        self.assertFalse([o for o in options if o.endswith("· Latest")])
+        # 3 sort orders + 14 movie genres x (plain, Popular, Top Rated)
         self.assertEqual(len(options), 3 + 14 * 3)
         self.assertEqual(len(options), len(set(options)))
 
     def test_series_rows_use_series_genres_and_movies_use_movie_genres(self):
-        self.assertIn("恐怖 · Latest", self.genre_list("hk_movies"))
-        self.assertNotIn("恐怖 · Latest", self.genre_list("cn_series"))
+        self.assertIn("恐怖 · Popular", self.genre_list("hk_movies"))
+        self.assertNotIn("恐怖 · Popular", self.genre_list("cn_series"))
         self.assertIn("动作冒险 · Top Rated", self.genre_list("cn_series"))
         self.assertEqual(len(self.genre_list("cn_series")), 3 + 12 * 3)
 
@@ -237,10 +239,14 @@ class MobileGenreTests(unittest.IsolatedAsyncioTestCase):
 
     def test_parse_extra_reads_combined_genre_entries(self):
         parse = app.parse_extra
-        encoded = "%E5%96%9C%E5%89%A7%20%C2%B7%20Latest"  # 喜剧 · Latest
-        self.assertEqual(parse(f"genre={encoded}.json"), (0, "Latest", "喜剧"))
-        self.assertEqual(parse(f"genre={encoded}&skip=20.json"), (20, "Latest", "喜剧"))
-        self.assertEqual(parse("genre=%E5%96%9C%E5%89%A7.json"), (0, "Popular", "喜剧"))
+        encoded = "%E5%96%9C%E5%89%A7%20%C2%B7%20Popular"  # 喜剧 · Popular
+        self.assertEqual(parse(f"genre={encoded}.json"), (0, "Popular", "喜剧"))
+        self.assertEqual(parse(f"genre={encoded}&skip=20.json"), (20, "Popular", "喜剧"))
+        self.assertEqual(parse("genre=%E5%96%9C%E5%89%A7.json"), (0, "Latest", "喜剧"))
+        # Entries from before 1.6.5 ("喜剧 · Latest") are still understood by old clients.
+        self.assertEqual(
+            parse("genre=%E5%96%9C%E5%89%A7%20%C2%B7%20Latest.json"), (0, "Latest", "喜剧")
+        )
         # Stremio Web's Sort dropdown, when set, wins over the sort inside the genre entry.
         self.assertEqual(parse(f"genre={encoded}&sort=Top%20Rated.json"), (0, "Top Rated", "喜剧"))
 
@@ -268,6 +274,73 @@ class MobileGenreTests(unittest.IsolatedAsyncioTestCase):
         params = tmdb_get.call_args.args[1]
         self.assertEqual(params["with_genres"], "35")
         self.assertEqual(params["sort_by"], "primary_release_date.desc")
+
+
+class DefaultSortTests(unittest.IsolatedAsyncioTestCase):
+    """The home screen (Board rows, Discover's untouched view) asks for the bare catalog URL."""
+
+    def test_latest_is_the_default_and_listed_first(self):
+        self.assertEqual(app.DEFAULT_SORT, "Latest")
+        self.assertEqual(app.SORT_OPTIONS, ["Latest", "Popular", "Top Rated"])
+        self.assertEqual(app.parse_extra(None), (0, "Latest", None))
+        self.assertEqual(app.parse_extra("skip=20.json"), (20, "Latest", None))
+        self.assertEqual(app.parse_extra("genre=%E6%82%AC%E7%96%91.json"), (0, "Latest", "悬疑"))
+
+    def test_popular_and_top_rated_are_still_reachable_explicitly(self):
+        parse = app.parse_extra
+        self.assertEqual(parse("sort=Popular.json"), (0, "Popular", None))
+        self.assertEqual(parse("sort=Top%20Rated.json"), (0, "Top Rated", None))
+        # Mobile apps only have the genre dropdown: the plain sort names live there too.
+        self.assertEqual(parse("genre=Popular.json"), (0, "Popular", None))
+        self.assertEqual(parse("genre=Top%20Rated.json"), (0, "Top Rated", None))
+        self.assertEqual(
+            parse("genre=%E5%96%9C%E5%89%A7%20%C2%B7%20Popular.json"), (0, "Popular", "喜剧")
+        )
+
+    def test_bare_catalog_urls_return_latest(self):
+        discover = AsyncMock(return_value={"metas": []})
+        segment = app.AddonConfig("hans", ("hk_movies",)).encode()
+        with patch.object(app, "discover_catalog", new=discover), TestClient(app.app) as client:
+            client.get("/catalog/movie/hk_movies.json")
+            client.get("/v140/catalog/movie/hk_movies.json")
+            client.get(f"/{segment}/catalog/movie/hk_movies.json")
+            client.get("/catalog/movie/hk_movies/skip=20.json")
+        self.assertEqual(
+            [call.args for call in discover.await_args_list],
+            [("movie", "hk_movies", 0, "Latest")] * 3
+            + [("movie", "hk_movies", 20, "Latest", None)],
+        )
+
+    async def test_default_reaches_tmdb_as_newest_first_up_to_today(self):
+        tmdb_get = AsyncMock(return_value={"results": []})
+        with (
+            patch.object(app, "cache", app.SimpleTTLCache()),
+            patch.object(app, "tmdb_get", new=tmdb_get),
+        ):
+            await app.discover_catalog("movie", "hk_movies", 0)
+            await app.discover_catalog("series", "cn_series", 0)
+            await app.discover_catalog("movie", "cn_movies", 0, "Popular")
+        movie, series, popular = (call.args[1] for call in tmdb_get.await_args_list)
+        self.assertEqual(movie["sort_by"], "primary_release_date.desc")
+        self.assertIn("primary_release_date.lte", movie)  # nothing unreleased
+        self.assertEqual(series["sort_by"], "first_air_date.desc")
+        self.assertIn("first_air_date.lte", series)
+        self.assertEqual(popular["sort_by"], "popularity.desc")
+
+    async def test_default_and_explicit_latest_share_a_cache_entry(self):
+        tmdb_get = AsyncMock(return_value={"results": []})
+        with (
+            patch.object(app, "cache", app.SimpleTTLCache()),
+            patch.object(app, "tmdb_get", new=tmdb_get),
+        ):
+            await app.discover_catalog("movie", "hk_movies", 0)
+            await app.discover_catalog("movie", "hk_movies", 0, "Latest")
+            await app.discover_catalog("movie", "hk_movies", 0, "Popular")
+        self.assertEqual(tmdb_get.await_count, 2)
+
+    def test_install_page_says_the_default_is_latest(self):
+        with TestClient(app.app) as client:
+            self.assertIn("默认按最新发布排序", client.get("/").text)
 
 
 class ConfigTests(unittest.TestCase):
